@@ -44,14 +44,70 @@ That trade is why the gate is mandatory rather than optional.
 | `explain <recipe>` | One recipe, with its examples executed as a live proof. |
 | `test` | Run every recipe example. Use this before trusting a new recipe. |
 | `check [--recipe R] [--diff] [--json]` | Report findings. Exits 1 if there are any, so CI can hold the line. Never writes. |
-| `run [--recipe R] [--apply] [--test] [--diff]` | Apply a recipe, then gate it. Without `--apply` it is a dry run. |
-| `rename --at file:line:col --to NAME [--apply]` | Rename one resolved symbol using rust-analyzer's type information. |
+| `run [--recipe R] [--apply] [--test] [--diff] [--json]` | Apply a recipe, then gate it. Without `--apply` it is a dry run. |
+| `rename --at file:line:col --to NAME [--apply] [--json]` | Rename one resolved symbol using rust-analyzer's type information. |
 | `serve [--status] [--stop] [--idle SECS]` | Keep a warm analyzer for this workspace, inspect it, or stop it. |
 | `verify [--test]` | The gate on its own: format, compile, optionally test. |
 
 Recipes that take parameters accept `--set key=value`, repeatable, on `check` and `run`.
 
 `--recipe` accepts an id, a namespace prefix (`rust.idiom` selects the whole pack), or `all`.
+
+## Machine-readable output
+
+`check`, `run` and `rename` accept `--json`. In that mode stdout carries newline-delimited JSON and nothing else — diffs, notes, progress and gate output all move to stderr — so the stream can be piped straight into `jq`.
+
+Every line is one object, and `type` says which kind it is. Readers can skip a type they do not know, so new ones are additive.
+
+```json
+{"type":"finding","file":"src/main.rs","line":10,"column":8,"recipe":"rust.idiom.string-len-zero","before":"items.len() == 0","after":"items.is_empty()"}
+{"type":"summary","command":"check","recipe":"rust.idioms","findings":6,"files":1,"changed":true,"applied":false}
+{"type":"error","message":"unknown recipe `rust.nope` ..."}
+```
+
+`finding` is one reported change or hazard:
+
+| Field | Meaning |
+| --- | --- |
+| `file` | Path relative to `--path`, with forward slashes on every platform. |
+| `line`, `column` | 1-based position of the match. |
+| `recipe` | The recipe id, or `null` for `rename`, which is positional rather than recipe-driven. |
+| `before` | The text that matched. |
+| `after` | The replacement, `null` for a scan finding that only reports, and `""` for a deletion. |
+
+`summary` closes a successful command:
+
+| Field | Meaning |
+| --- | --- |
+| `command` | `check`, `run` or `rename`. |
+| `recipe` | The selector as written (id, prefix or `all`), or `null` for `rename`. |
+| `findings` | Number of `finding` lines in this stream. |
+| `files` | Number of distinct files those findings touch. |
+| `changed` | Whether anything would change (`check`, a dry run) or did change (`--apply`). |
+| `applied` | Whether the changes were written and kept. A dry run, and an apply that the gate rolled back, are both `false`. |
+| `gates` | Present only when the correctness gate actually ran: `[{"name":"format","ok":true},{"name":"compile","ok":true}]`. An absent key means no gate ran, which is different from a gate that passed. |
+
+A successful command ends with its summary. A failed one ends with `error` as the last line and exits non-zero; `check` also exits 1 when it reports findings, and still ends with its summary.
+
+```console
+$ rustrewrite check --recipe rust.idioms --json \
+  | jq -r 'select(.type == "finding") | "\(.file):\(.line):\(.column) \(.recipe)"'
+src/main.rs:10:8 rust.idiom.string-len-zero
+src/main.rs:18:8 rust.idiom.bool-compare
+src/main.rs:21:8 rust.idiom.bool-compare
+...
+
+$ rustrewrite run --recipe rust.idioms --apply --json \
+  | jq 'select(.type == "summary") | {changed, applied, gates}'
+{
+  "changed": true,
+  "applied": true,
+  "gates": [
+    { "name": "format", "ok": true },
+    { "name": "compile", "ok": true }
+  ]
+}
+```
 
 ## Type-aware renames
 

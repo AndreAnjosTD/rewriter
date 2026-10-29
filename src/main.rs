@@ -8,6 +8,7 @@ mod callsites;
 mod daemon;
 mod engine;
 mod recipes;
+mod report;
 mod semantic;
 mod util;
 mod verify;
@@ -103,6 +104,9 @@ enum Command {
         /// Print a unified diff.
         #[arg(long)]
         diff: bool,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
         /// Recipe option, e.g. --set file=src/main.rs. Repeatable.
         #[arg(long = "set", value_name = "KEY=VALUE")]
         options: Vec<String>,
@@ -140,6 +144,9 @@ enum Command {
         /// Allow running with uncommitted changes.
         #[arg(long)]
         allow_dirty: bool,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
         /// Seconds to wait for the analyzer to load and index the workspace.
         #[arg(long, default_value_t = 180)]
         wait: u64,
@@ -168,14 +175,26 @@ enum Command {
 }
 
 fn main() {
-    if let Err(err) = run() {
-        eprintln!("rustrewrite: {err:#}");
+    let cli = Cli::parse();
+    // A failure must still land as JSON when the caller asked for JSON, or a
+    // pipeline would silently lose the reason.
+    let json = match &cli.command {
+        Command::Check { json, .. } | Command::Run { json, .. } | Command::Rename { json, .. } => {
+            *json
+        }
+        _ => false,
+    };
+    if let Err(err) = run(cli) {
+        let message = format!("{err:#}");
+        if json {
+            println!("{}", report::error(&message));
+        }
+        eprintln!("rustrewrite: {message}");
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    let cli = Cli::parse();
+fn run(cli: Cli) -> Result<()> {
     let root = absolute(&cli.path)?;
     // Loaded per command: `serve`, `verify` and `rename` do not read recipes, and
     // a warm server should not wait on a recipe scan it never uses.
@@ -208,6 +227,7 @@ fn run() -> Result<()> {
             test,
             allow_dirty,
             diff,
+            json,
             options,
             wait,
             cold,
@@ -220,6 +240,7 @@ fn run() -> Result<()> {
             test,
             allow_dirty,
             diff,
+            json,
             &options,
             AnalyzerOpts { wait, warm: !cold },
         ),
@@ -230,6 +251,7 @@ fn run() -> Result<()> {
             apply,
             no_verify,
             allow_dirty,
+            json,
             wait,
             cold,
         } => rename_symbol(
@@ -239,6 +261,7 @@ fn run() -> Result<()> {
             apply,
             !no_verify,
             allow_dirty,
+            json,
             AnalyzerOpts { wait, warm: !cold },
         ),
         Command::Serve { stop, status, idle } => serve_command(&root, stop, status, idle),
@@ -485,7 +508,15 @@ fn check(
 
     if json {
         for finding in &findings {
-            println!("{}", serde_json_line(finding, root));
+            println!(
+                "{}",
+                report::FindingLine {
+                    root,
+                    finding,
+                    recipe: Some(&finding.recipe),
+                }
+                .line()
+            );
         }
     } else {
         for finding in &findings {
@@ -495,14 +526,28 @@ fn check(
 
     if show_diff {
         for (path, old, new) in &pending {
-            print!(
-                "{}",
-                util::unified_diff(old, new, &path.display().to_string())
+            human_raw(
+                json,
+                &util::unified_diff(old, new, &path.display().to_string()),
             );
         }
     }
 
-    if !json {
+    if json {
+        println!(
+            "{}",
+            report::Summary {
+                command: "check",
+                recipe: Some(selector),
+                findings: findings.len(),
+                files: distinct_files(&findings),
+                changed: changed_files > 0,
+                applied: false,
+                gates: None,
+            }
+            .line()
+        );
+    } else {
         println!();
         if findings.is_empty() {
             println!("no findings for {selector} in {}", root.display());
@@ -534,45 +579,22 @@ fn check(
     }
 }
 
-fn serde_json_line(finding: &Finding, root: &Path) -> String {
-    let path = finding
-        .path
-        .strip_prefix(root)
-        .unwrap_or(&finding.path)
-        .display()
-        .to_string()
-        .replace('\\', "/");
-    format!(
-        "{{\"file\":{},\"line\":{},\"column\":{},\"recipe\":{},\"before\":{},\"after\":{}}}",
-        json_string(&path),
-        finding.line,
-        finding.column,
-        json_string(&finding.recipe),
-        json_string(&finding.before),
-        finding
-            .after
-            .as_ref()
-            .map(|a| json_string(a))
-            .unwrap_or_else(|| "null".to_string())
-    )
+/// Human-facing text: stdout normally, stderr when stdout is reserved for JSON.
+fn human(json: bool, text: impl std::fmt::Display) {
+    if json {
+        eprintln!("{text}");
+    } else {
+        println!("{text}");
+    }
 }
 
-fn json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
+/// The same, for text that already carries its own line endings (diffs).
+fn human_raw(json: bool, text: &str) {
+    if json {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
     }
-    out.push('"');
-    out
 }
 
 fn distinct_files(findings: &[Finding]) -> usize {
@@ -1081,6 +1103,7 @@ fn run_recipes(
     with_tests: bool,
     allow_dirty: bool,
     show_diff: bool,
+    json: bool,
     options: &[String],
     analyzer_opts: AnalyzerOpts,
 ) -> Result<()> {
@@ -1118,8 +1141,13 @@ fn run_recipes(
         }
     }
 
-    for (path, _, new) in &writes {
-        std::fs::write(path, new).with_context(|| format!("writing {}", path.display()))?;
+    // A dry run must leave the tree alone, so only an apply reaches disk. The
+    // semantic steps below then resolve against the rewritten files, as they
+    // must: the analyzer reads files, not our buffers.
+    if apply {
+        for (path, _, new) in &writes {
+            std::fs::write(path, new).with_context(|| format!("writing {}", path.display()))?;
+        }
     }
 
     // Semantic steps run after structural edits are on disk, because the
@@ -1132,15 +1160,31 @@ fn run_recipes(
 
     if show_diff || !apply {
         for (path, old, new) in &writes {
-            print!(
-                "{}",
-                util::unified_diff(old, new, &path.display().to_string())
+            human_raw(
+                json,
+                &util::unified_diff(old, new, &path.display().to_string()),
             );
         }
     }
 
-    for finding in &findings {
-        eprintln!("{}", finding.one_line(root));
+    if json {
+        for finding in &findings {
+            println!(
+                "{}",
+                report::FindingLine {
+                    root,
+                    finding,
+                    recipe: Some(&finding.recipe),
+                }
+                .line()
+            );
+        }
+    } else {
+        // Kept on stderr in the human path too: the diff is the report, and the
+        // one-line findings are the index to it.
+        for finding in &findings {
+            eprintln!("{}", finding.one_line(root));
+        }
     }
 
     let mut cargo_log = Vec::new();
@@ -1152,39 +1196,70 @@ fn run_recipes(
         })?;
     }
 
+    let files = distinct_files(&findings);
+    let changed = !writes.is_empty();
+
     if !apply {
-        println!();
-        println!(
-            "dry run: {} change(s) across {} file(s) for {selector}",
-            findings.len(),
-            writes.len()
+        human(json, "");
+        human(
+            json,
+            format!(
+                "dry run: {} change(s) across {} file(s) for {selector}",
+                findings.len(),
+                writes.len()
+            ),
         );
-        println!("re-run with --apply to write, then the compile gate decides.");
+        human(
+            json,
+            "re-run with --apply to write, then the compile gate decides.",
+        );
+        if json {
+            println!(
+                "{}",
+                report::Summary {
+                    command: "run",
+                    recipe: Some(selector),
+                    findings: findings.len(),
+                    files,
+                    changed,
+                    applied: false,
+                    gates: None,
+                }
+                .line()
+            );
+        }
         return Ok(());
     }
-    println!();
+    human(json, "");
     if writes.is_empty() {
-        println!("no changes to write for {selector}");
+        human(json, format!("no changes to write for {selector}"));
     } else {
-        println!(
-            "applied {} change(s) across {} file(s) for {selector}",
-            findings.len(),
-            writes.len()
+        human(
+            json,
+            format!(
+                "applied {} change(s) across {} file(s) for {selector}",
+                findings.len(),
+                writes.len()
+            ),
         );
     }
     for line in cargo_log {
-        println!("  {line}");
+        human(json, format!("  {line}"));
     }
 
+    let mut gates = None;
     if verify_after {
-        println!("running the correctness gate...");
-        let gates = verify::run(root, with_tests)?;
+        human(json, "running the correctness gate...");
+        let results = verify::run(root, with_tests)?;
         let mut failed = Vec::new();
-        for gate in &gates {
-            println!(
-                "  {:<8} {}",
-                gate.name,
-                if gate.ok { "ok" } else { "FAILED" }
+        for gate in &results {
+            human(
+                json,
+                format!(
+                    "  {:<8} {}",
+                    gate.name,
+                    if gate.ok { "ok" } else { "FAILED" }
+                ),
             );
             if !gate.ok {
                 failed.push(gate);
@@ -1193,7 +1268,7 @@ fn run_recipes(
         if !failed.is_empty() {
             if let Some(snapshot) = &snapshot {
                 snapshot.restore()?;
-                println!("rolled back every change from this run.");
+                human(json, "rolled back every change from this run.");
             }
             for gate in failed {
                 eprintln!();
@@ -1205,9 +1280,31 @@ fn run_recipes(
                  This is a recipe bug: report it with the file and the pattern that matched."
             );
         }
-        println!("correctness gate passed.");
+        human(json, "correctness gate passed.");
+        gates = Some(results);
     } else {
-        println!("compile gate skipped (--no-verify). Review the diff before committing.");
+        human(
+            json,
+            "compile gate skipped (--no-verify). Review the diff before committing.",
+        );
+    }
+
+    // A summary is the last line on success; on failure the error line main
+    // writes is, so a consumer always terminates on a typed object.
+    if json {
+        println!(
+            "{}",
+            report::Summary {
+                command: "run",
+                recipe: Some(selector),
+                findings: findings.len(),
+                files,
+                changed,
+                applied: true,
+                gates: gates.as_deref(),
+            }
+            .line()
+        );
     }
 
     Ok(())
@@ -1251,6 +1348,7 @@ fn rename_symbol(
     apply: bool,
     verify_after: bool,
     allow_dirty: bool,
+    json: bool,
     opts: AnalyzerOpts,
 ) -> Result<()> {
     let (file, line, column) = parse_location(at)?;
@@ -1315,52 +1413,117 @@ fn rename_symbol(
         );
     }
 
-    let mut total = 0usize;
+    let mut findings: Vec<Finding> = Vec::new();
     let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
     for file_edits in &edits {
         let text = std::fs::read_to_string(&file_edits.path)
             .with_context(|| format!("reading {}", file_edits.path.display()))?;
         let updated = semantic::apply_edits(&text, &file_edits.edits, encoding)?;
-        total += file_edits.edits.len();
+        for edit in &file_edits.edits {
+            // Report the text actually replaced, not the token that anchored
+            // the rename; one rename can touch several unrelated spans.
+            let replaced = semantic::position_to_offset(&text, edit.range.start, encoding)
+                .zip(semantic::position_to_offset(
+                    &text,
+                    edit.range.end,
+                    encoding,
+                ))
+                .map(|(start, end)| text[start..end].to_string())
+                .unwrap_or_default();
+            findings.push(Finding {
+                recipe: String::new(),
+                path: file_edits.path.clone(),
+                line: edit.range.start.line as usize + 1,
+                column: edit.range.start.character as usize + 1,
+                before: replaced,
+                after: Some(edit.new_text.clone()),
+                message: String::new(),
+            });
+        }
         if updated != text {
             writes.push((file_edits.path.clone(), text, updated));
         }
     }
 
+    if json {
+        // Rename is positional, so its findings carry no recipe.
+        for finding in &findings {
+            println!(
+                "{}",
+                report::FindingLine {
+                    root: &root,
+                    finding,
+                    recipe: None,
+                }
+                .line()
+            );
+        }
+    }
+
     for (path, old, new) in &writes {
-        print!(
-            "{}",
-            util::unified_diff(old, new, &path.display().to_string())
+        human_raw(
+            json,
+            &util::unified_diff(old, new, &path.display().to_string()),
         );
     }
 
+    let files = distinct_files(&findings);
+    let changed = !writes.is_empty();
+
     if !apply {
-        println!();
-        println!(
-            "dry run: {total} edit(s) across {} file(s); re-run with --apply to write",
-            writes.len()
+        human(json, "");
+        human(
+            json,
+            format!(
+                "dry run: {} edit(s) across {} file(s); re-run with --apply to write",
+                findings.len(),
+                writes.len()
+            ),
         );
+        if json {
+            println!(
+                "{}",
+                report::Summary {
+                    command: "rename",
+                    recipe: None,
+                    findings: findings.len(),
+                    files,
+                    changed,
+                    applied: false,
+                    gates: None,
+                }
+                .line()
+            );
+        }
         return Ok(());
     }
 
     for (path, _, new) in &writes {
         std::fs::write(path, new).with_context(|| format!("writing {}", path.display()))?;
     }
-    println!();
-    println!(
-        "renamed to `{new_name}`: {total} edit(s) across {} file(s)",
-        writes.len()
+    human(json, "");
+    human(
+        json,
+        format!(
+            "renamed to `{new_name}`: {} edit(s) across {} file(s)",
+            findings.len(),
+            writes.len()
+        ),
     );
 
+    let mut gates = None;
     if verify_after {
-        println!("running the correctness gate...");
-        let gates = verify::run(&root, false)?;
+        human(json, "running the correctness gate...");
+        let results = verify::run(&root, false)?;
         let mut failed = Vec::new();
-        for gate in &gates {
-            println!(
-                "  {:<8} {}",
-                gate.name,
-                if gate.ok { "ok" } else { "FAILED" }
+        for gate in &results {
+            human(
+                json,
+                format!(
+                    "  {:<8} {}",
+                    gate.name,
+                    if gate.ok { "ok" } else { "FAILED" }
+                ),
             );
             if !gate.ok {
                 failed.push(gate);
@@ -1369,7 +1532,7 @@ fn rename_symbol(
         if !failed.is_empty() {
             if let Some(snapshot) = &snapshot {
                 snapshot.restore()?;
-                println!("rolled back the rename.");
+                human(json, "rolled back the rename.");
             }
             for gate in failed {
                 eprintln!();
@@ -1378,7 +1541,24 @@ fn rename_symbol(
             }
             bail!("the rename did not compile, so it was rolled back.");
         }
-        println!("correctness gate passed.");
+        human(json, "correctness gate passed.");
+        gates = Some(results);
+    }
+
+    if json {
+        println!(
+            "{}",
+            report::Summary {
+                command: "rename",
+                recipe: None,
+                findings: findings.len(),
+                files,
+                changed,
+                applied: true,
+                gates: gates.as_deref(),
+            }
+            .line()
+        );
     }
 
     Ok(())
