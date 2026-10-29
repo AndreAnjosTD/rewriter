@@ -164,6 +164,8 @@ The decision belongs to the reviewer, so the tool reports it and writes nothing.
 
 [`docs/openrewrite-mapping.md`](docs/openrewrite-mapping.md) audits the full OpenRewrite catalog against Rust and records which recipes transfer, which need type information, and which were attempted and rejected.
 
+[`docs/type-attribution-scope.md`](docs/type-attribution-scope.md) scopes the type-aware layer that would unlock the recipes needing type information, with measured numbers for each architecture option.
+
 ## Known limits
 
 - **Type position is not matchable with `pattern`.** `&Vec<$T>` does not parse as an expression, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Recipes that rename a type need the cargo-backed path or a contribution to the engine.

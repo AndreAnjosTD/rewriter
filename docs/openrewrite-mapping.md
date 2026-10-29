@@ -109,7 +109,7 @@ Honesty about the failures is more useful than a longer catalog.
 
 In rough order of value per unit of work:
 
-1. **A type-attribution layer.** `rust-analyzer` exposes diagnostics, symbol resolution and assists over LSP. Driving it would unlock the whole `ChangeType` / `ChangeMethodName` / `ReorderMethodArguments` family, which is 18 of the 45 primitives and most of the catalog's conceptual weight.
+1. **A type-attribution layer.** `rust-analyzer` exposes diagnostics, symbol resolution and assists over LSP. Driving it would unlock the whole `ChangeType` / `ChangeMethodName` / `ReorderMethodArguments` family, which is 18 of the 45 primitives and most of the catalog's conceptual weight. Scoped, with measurements, in [`type-attribution-scope.md`](type-attribution-scope.md).
 2. **Import and header edits.** `AddImport`, `AddLicenseHeader` and the comment recipes need a step kind that inserts text at a file position rather than replacing a match. Small engine addition, unlocks 6 recipes.
 3. **String-literal rewrites.** `ChangePackageInStringLiteral`, `ReplaceStringLiteralValue` and `ChangeTypeInStringLiteral` need a rule that matches inside a literal; the engine supports this today but the recipes are not written.
 4. **Recipe options.** OpenRewrite parameterizes `ChangeType` with `oldFullyQualifiedTypeName` / `newFullyQualifiedTypeName`. This tool hard-codes each migration as its own recipe. A `${option}` substitution with `--set` would make the catalog generative instead of enumerative.
