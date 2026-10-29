@@ -1383,8 +1383,11 @@ fn run_recipes(
                 eprintln!("{}", gate.detail);
             }
             bail!(
-                "the correctness gate rejected this rewrite, so nothing was kept. \
-                 This is a recipe bug: report it with the file and the pattern that matched."
+                "the correctness gate rejected this rewrite, so nothing was kept.\n\
+                 Either a rule is too broad, or the change needs edits this recipe does not \
+                 make: a caller, an implementation, or an import. A recipe that edits one \
+                 declaration, such as change-return-type or change-type, fails here when its \
+                 callers still expect the old shape."
             );
         }
         human(json, "correctness gate passed.");
