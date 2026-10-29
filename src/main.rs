@@ -724,7 +724,7 @@ fn run_semantic(
             if updated == text {
                 continue;
             }
-            let (found_line, found_column) = line_column(&text, edit.range.start);
+            let (found_line, found_column) = util::line_column(&text, edit.range.start);
             outcome.findings.push(Finding {
                 recipe: step.recipe.clone(),
                 path: path.clone(),
@@ -1106,7 +1106,7 @@ fn apply_rewrites(
             updated.replace_range(range.clone(), replacement);
         }
         for (range, replacement) in &edits {
-            let (line, column) = line_column(&original, range.start);
+            let (line, column) = util::line_column(&original, range.start);
             outcome.findings.push(Finding {
                 recipe: recipe.to_string(),
                 path: path.clone(),
@@ -1128,18 +1128,6 @@ fn apply_rewrites(
         }
     }
     Ok(())
-}
-
-fn line_column(text: &str, offset: usize) -> (usize, usize) {
-    let before = &text[..offset];
-    let line = before.matches('\n').count() + 1;
-    let column = before
-        .rsplit('\n')
-        .next()
-        .map(|tail| tail.chars().count())
-        .unwrap_or(0)
-        + 1;
-    (line, column)
 }
 
 /// Find the token to act on, by anchor text or by line number. Returns its byte

@@ -52,6 +52,20 @@ pub enum StepKind {
     /// A rename resolved by rust-analyzer, so two same-named methods on
     /// different types are told apart by the compiler rather than by text.
     Semantic,
+    /// Text written at a file position, for changes that have no node to
+    /// replace: a license header, an import.
+    Insert,
+}
+
+/// Where an `insert` step writes its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum InsertWhere {
+    /// The very start of the file, above module docs and inner attributes.
+    #[default]
+    Top,
+    /// After the last top-level `use`, or above the first item when there is none.
+    AfterUses,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -75,6 +89,10 @@ pub struct OptionSpec {
     pub description: String,
     #[serde(default)]
     pub required: bool,
+    /// Value used when the option is not supplied. Without one, `--set` is the
+    /// only way to fill a `${name}` placeholder in a step.
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -127,6 +145,14 @@ pub struct Step {
     pub parameter: Option<String>,
     /// The assist title to run, e.g. `Inline variable`.
     pub title: Option<String>,
+    /// Insertion point for an `insert` step.
+    #[serde(rename = "where")]
+    pub insert_where: Option<InsertWhere>,
+    /// The text an `insert` step writes, with `${option}` substitution.
+    pub text: Option<String>,
+    /// Marker that makes an `insert` step idempotent: when the file already
+    /// contains it, nothing is inserted. Defaults to `text`.
+    pub unless: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +175,11 @@ pub struct Recipe {
     pub risk: Risk,
     #[serde(default)]
     pub mode: Mode,
+    /// Keep this recipe out of `all`: it must be named. Its default behavior is
+    /// a policy decision for the codebase, such as which license header to
+    /// stamp, not a mechanical fix that is safe to sweep everywhere.
+    #[serde(default, rename = "opt-in")]
+    pub opt_in: bool,
     /// Composite: ids of recipes to run, in order.
     #[serde(default)]
     pub recipes: Vec<String>,
@@ -265,6 +296,22 @@ impl Catalog {
                 StepKind::Cargo if step.command.is_none() => {
                     bail!("recipe `{}` has a cargo step with no `command`", recipe.id)
                 }
+                StepKind::Insert => {
+                    if step.insert_where.is_none() {
+                        bail!(
+                            "recipe `{}` has an insert step with no `where` \
+                             (expected `top` or `after-uses`)",
+                            recipe.id
+                        )
+                    }
+                    if step
+                        .text
+                        .as_deref()
+                        .is_none_or(|text| text.trim().is_empty())
+                    {
+                        bail!("recipe `{}` has an insert step with no `text`", recipe.id)
+                    }
+                }
                 StepKind::Semantic => {
                     if step.file.is_none() || step.from.is_none() {
                         bail!(
@@ -321,12 +368,15 @@ impl Catalog {
             }
         }
         // A recipe that both edits text and renames a symbol would ask the
-        // server to resolve positions against a file the structural steps have
+        // server to resolve positions against a file the text edits have
         // already moved. Keep the two apart instead of guessing.
         let kinds: Vec<StepKind> = recipe.steps.iter().map(|step| step.kind).collect();
-        if kinds.contains(&StepKind::Structural) && kinds.contains(&StepKind::Semantic) {
+        let edits_text = kinds
+            .iter()
+            .any(|kind| matches!(kind, StepKind::Structural | StepKind::Insert));
+        if edits_text && kinds.contains(&StepKind::Semantic) {
             bail!(
-                "recipe `{}` mixes structural and semantic steps; split it into two recipes",
+                "recipe `{}` mixes text edits and semantic steps; split it into two recipes",
                 recipe.id
             );
         }
@@ -348,7 +398,7 @@ impl Catalog {
             return Ok(self
                 .recipes
                 .values()
-                .filter(|r| r.mode == Mode::Fix && r.recipes.is_empty())
+                .filter(|r| r.mode == Mode::Fix && r.recipes.is_empty() && !r.opt_in)
                 // A recipe that needs parameters cannot run from a bare `all`;
                 // it has to be named, with its options supplied.
                 .filter(|r| !r.options.values().any(|option| option.required))
@@ -470,9 +520,19 @@ pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String
             );
         }
     }
+    // A supplied value wins, a declared default fills in otherwise, and a
+    // required option with neither is what the caller still has to answer.
+    let mut values = provided.clone();
+    for (name, spec) in declared {
+        if !values.contains_key(name) {
+            if let Some(default) = &spec.default {
+                values.insert(name.clone(), default.clone());
+            }
+        }
+    }
     let missing: Vec<(&String, &OptionSpec)> = declared
         .iter()
-        .filter(|(name, spec)| spec.required && !provided.contains_key(*name))
+        .filter(|(name, spec)| spec.required && !values.contains_key(*name))
         .collect();
     if !missing.is_empty() {
         let lines = missing
@@ -494,7 +554,7 @@ pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String
         };
         bail!("recipe `{}` needs {noun}:\n{lines}", resolved.recipe.id);
     }
-    if provided.is_empty() {
+    if values.is_empty() {
         return Ok(());
     }
 
@@ -512,21 +572,23 @@ pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String
             &mut raw.argument,
             &mut raw.parameter,
             &mut raw.title,
+            &mut raw.text,
+            &mut raw.unless,
         ]
         .into_iter()
         .flatten()
         {
-            *field = substitute(field, provided);
+            *field = substitute(field, &values);
         }
         for value in [&mut raw.rule, &mut raw.constraints, &mut raw.utils]
             .into_iter()
             .flatten()
         {
-            substitute_value(value, provided);
+            substitute_value(value, &values);
         }
         if let Some(command) = &mut raw.command {
             for argument in command.iter_mut() {
-                *argument = substitute(argument, provided);
+                *argument = substitute(argument, &values);
             }
         }
         let rendered = serde_yaml::to_string(&step.step).unwrap_or_default();

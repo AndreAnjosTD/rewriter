@@ -1,0 +1,26 @@
+id: rust.migrate.add-import
+name: Add a missing use declaration
+description: >-
+  Writes `use <path>;` after the last existing `use` declaration, or above the
+  first item when a file has none. A file is left alone when the exact line is
+  already present, and also when any existing `use` declaration already brings
+  the imported name into scope. That second check compares the last segment of
+  `path` against every identifier inside the file's `use` declarations, so a
+  plain import, a braced group such as
+  `use std::collections::{BTreeMap, HashMap};`, an aliased import, and a
+  multi-item import all count as already present. A glob import is not treated
+  as covering the name.
+tags: [migrate]
+risk: low
+
+options:
+  path:
+    description: >-
+      Fully qualified path to import, for example
+      `std::collections::BTreeMap`.
+    required: true
+
+steps:
+  - kind: insert
+    where: after-uses
+    text: "use ${path};"

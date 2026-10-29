@@ -71,8 +71,8 @@ Every line is one object, and `type` says which kind it is. Readers can skip a t
 | `file` | Path relative to `--path`, with forward slashes on every platform. |
 | `line`, `column` | 1-based position of the match. |
 | `recipe` | The recipe id, or `null` for `rename`, which is positional rather than recipe-driven. |
-| `before` | The text that matched. |
-| `after` | The replacement, `null` for a scan finding that only reports, and `""` for a deletion. |
+| `before` | The text that matched. Empty for an `insert` step, which replaces nothing. |
+| `after` | The replacement or the inserted text, `null` for a scan finding that only reports, and `""` for a deletion. |
 
 `summary` closes a successful command:
 
@@ -312,21 +312,66 @@ steps:
     to: ${to}
 ```
 
-A recipe may declare parameters, the equivalent of OpenRewrite's `@Option` fields, and they are substituted into `${name}`:
+An `insert` step writes text at a file position instead of replacing a node. It needs `where` (`top` or `after-uses`) and `text`; `unless` is the marker that makes it idempotent and defaults to `text`. `include`, `exclude` and `message` work as they do on a structural step:
+
+```yaml
+steps:
+  - kind: insert
+    where: after-uses        # top puts the text on line one
+    text: "use ${path};"
+    unless: "BTreeMap"       # optional; defaults to `text`
+    include: ["src/**"]      # optional path globs, as on any step
+    message: adds the import # shown in reports
+```
+
+A file that already contains the `unless` marker gets nothing, and reports nothing, so running the same recipe twice is a no-op.
+An inserted `use` declaration is also skipped when an existing `use` already binds the same last path segment, so `use std::collections::{BTreeMap, HashMap};` counts as having `BTreeMap`.
+The step runs after structural steps and before the gate.
+
+A recipe may declare parameters, the equivalent of OpenRewrite's `@Option` fields, and they are substituted into `${name}`.
+`default` makes an option optional and supplies the value when it is not given:
 
 ```yaml
 options:
   file:
     description: Path to the file that declares the method.
     required: true
+  header:
+    description: The comment block to insert.
+    default: "// SPDX-License-Identifier: MIT"
 ```
 
 `rustrewrite list` shows which recipes need `--set`, and `explain` describes each option.
 
-A recipe may not mix `structural` and `semantic` steps. The structural pass edits text in memory, so a rename resolved afterwards would be pointed at a file that has already moved. Split such a change into two recipes and run them in order.
+A recipe marked `opt-in: true` is only run when it is named; `all` skips it. Use that for a recipe whose default behavior is a project policy choice rather than a mechanical fix, such as which license header to stamp.
+
+A recipe may not mix text-editing (`structural` or `insert`) and `semantic` steps. The text pass happens before the rename is resolved, so the analyzer would be pointed at a file that has already moved. Split such a change into two recipes and run them in order.
 
 Every recipe that rewrites something should carry at least one `example`.
 `rustrewrite test` runs them all, so a recipe that silently stops matching fails the build rather than quietly doing nothing.
+
+## Inserting text
+
+Some migrations add text where there is no node to replace. An `insert` step covers those, and the same step serves `check` and `run --apply`:
+
+```
+rustrewrite check --recipe rust.migrate.add-license-header
+rustrewrite run   --recipe rust.migrate.add-license-header --apply
+
+rustrewrite run --recipe rust.migrate.add-import \
+  --set path=std::collections::BTreeMap --apply
+```
+
+`rust.migrate.add-license-header` writes a `//` comment block at the very top of each file under `src/**`, above `//!` module docs and inner attributes, and skips `vendor/` and `third_party/` directories.
+The `header` option replaces the default SPDX line: `--set 'header=// Copyright Acme Ltd'`.
+A file that already contains the header text is left alone, so a second run reports nothing.
+
+`rust.migrate.add-import` writes `use <path>;` after the last existing `use` declaration, or above the first item when a file has none.
+It does not duplicate an import already present in any form: the duplicate check compares the last segment of `path` against every identifier inside the file's `use` declarations, so `use std::collections::BTreeMap;`, `use std::collections::{BTreeMap, HashMap};` and an aliased import all count.
+A glob import does not count, because it does not name the item.
+
+Each changed file produces one finding. Since an insertion replaces nothing, that finding's `before` is empty and its `after` is the inserted text.
+Neither recipe runs from a bare `all`: the header recipe is marked opt-in, because which license a project carries is a policy decision, and the import recipe needs `--set path`.
 
 ## The catalog
 
@@ -356,6 +401,8 @@ Every recipe that rewrites something should carry at least one `example`.
 | `rust.migrate.reorder-arguments` | semantic | permute arguments at every call site and parameters in the declaration |
 | `rust.migrate.assist` | semantic | run one of rust-analyzer's built-in assists, chosen by title |
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
+| `rust.migrate.add-license-header` | insert | writes a `//` license header above `src/**` files that lack it |
+| `rust.migrate.add-import` | insert | adds a missing `use` after the last import, without duplicating one |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |
 | `rust.cleanup` | composite | idiom pack, then compiler suggestions |
