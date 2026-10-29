@@ -1341,6 +1341,7 @@ fn parse_location(at: &str) -> Result<(PathBuf, u32, u32)> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rename_symbol(
     root: &Path,
     at: &str,
