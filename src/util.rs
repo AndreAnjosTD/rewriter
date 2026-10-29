@@ -49,6 +49,19 @@ pub fn unified_diff(old: &str, new: &str, name: &str) -> String {
     diff.unified_diff().header(name, name).to_string()
 }
 
+/// 1-based line and character column of a byte offset.
+pub fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text[..offset];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .map(|tail| tail.chars().count())
+        .unwrap_or(0)
+        + 1;
+    (line, column)
+}
+
 /// Canonicalize a path and drop the Windows verbatim prefix, so that a
 /// canonicalized file path and a user-supplied root compare equal and print
 /// readably. On other platforms this is just `canonicalize`.

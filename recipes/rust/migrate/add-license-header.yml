@@ -1,0 +1,29 @@
+id: rust.migrate.add-license-header
+name: Add a license header to every Rust file
+description: >-
+  Writes a `//` comment header at the very start of each matching Rust file,
+  above module docs and inner attributes. The `header` option defaults to a
+  short SPDX line and can be replaced with any comment block. The step is
+  scoped to `src/**` and skips `vendor/` and `third_party/` directories, so a
+  vendored copy is never stamped. The duplicate check is the header text
+  itself: a file that already contains it is left alone, which makes a second
+  run a no-op. This recipe is named rather than picked up by `all`, because
+  which license a project carries is a policy decision.
+tags: [migrate, hygiene]
+risk: low
+opt-in: true
+
+options:
+  header:
+    description: >-
+      The comment block to insert, without a trailing newline. Defaults to an
+      SPDX-License-Identifier line.
+    default: |-
+      // SPDX-License-Identifier: MIT
+
+steps:
+  - kind: insert
+    where: top
+    text: "${header}"
+    include: ["src/**"]
+    exclude: ["**/vendor/**", "**/third_party/**"]
