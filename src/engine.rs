@@ -519,17 +519,27 @@ fn inserted_use_name(body: &str) -> Option<&str> {
 /// Whether an existing `use` declaration already brings `name` into scope.
 ///
 /// Identifier tokens inside use declarations are matched rather than the whole
-/// path, because that is what catches `use a::{BTreeMap, HashMap};`, an aliased
-/// import, and several declarations in one statement.
+/// path, because that is what catches `use a::{BTreeMap, HashMap};` and several
+/// declarations in one statement. An alias is the exception: `use a::Bar as Baz`
+/// binds `Baz`, not `Bar`, so the alias is the only name that counts there.
 fn binds_name(text: &str, name: &str) -> bool {
     let doc = SupportLang::Rust.ast_grep(text);
-    let found = doc.root().dfs().any(|node| {
-        node.kind() == "use_declaration"
-            && node
-                .dfs()
-                .any(|inner| inner.kind() == "identifier" && inner.text() == name)
-    });
+    let found = doc
+        .root()
+        .dfs()
+        .any(|node| node.kind() == "use_declaration" && binds_inside(&node, name));
     found
+}
+
+fn binds_inside(node: &ast_grep_core::Node<'_, StrDoc<SupportLang>>, name: &str) -> bool {
+    match node.kind().as_ref() {
+        "use_as_clause" => node
+            .field("alias")
+            .map(|alias| alias.text() == name)
+            .unwrap_or(false),
+        "identifier" => node.text() == name,
+        _ => node.children().any(|child| binds_inside(&child, name)),
+    }
 }
 
 fn relative_path(path: &Path, root: &Path) -> String {

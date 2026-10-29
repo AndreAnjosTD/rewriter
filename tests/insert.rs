@@ -200,6 +200,41 @@ fn import_already_in_a_braced_group_is_left_alone() {
 }
 
 #[test]
+fn an_alias_binds_its_own_name_not_the_original() {
+    // `use path::Debug as Printable` binds `Printable`, not `Debug`, so asking
+    // for `Debug` must still insert the import. Treating the path segment as
+    // bound would leave the caller with an unresolved name and report success.
+    let dir = scratch(
+        "import-alias",
+        "use std::fmt::Debug as Printable;\n\npub fn one() -> u8 {\n    1\n}\n",
+    );
+
+    let output = run(
+        &[
+            "check",
+            "--recipe",
+            "rust.migrate.add-import",
+            "--set",
+            "path=std::fmt::Debug",
+        ],
+        &dir,
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the alias does not bind `Debug`, so this must be a finding:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("use std::fmt::Debug;"),
+        "expected the import as the finding:\n{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn import_lands_before_the_first_item_when_there_is_no_use() {
     let dir = scratch(
         "import-no-use",
