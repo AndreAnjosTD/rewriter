@@ -10,7 +10,7 @@
 //! control of diffing, gating and rollback.
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -27,19 +27,19 @@ pub enum PositionEncoding {
     Utf16,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextEdit {
     pub range: Range,
@@ -67,14 +67,14 @@ struct WorkspaceEdit {
 }
 
 /// Edits for one file, already mapped back to a real path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FileEdits {
     pub path: PathBuf,
     pub edits: Vec<TextEdit>,
 }
 
 /// A reference to a resolved symbol: a call, an import, or a use as a value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Location {
     pub path: PathBuf,
     pub range: Range,
@@ -82,11 +82,48 @@ pub struct Location {
 
 /// One assist offered by the server. The raw JSON is kept because resolving an
 /// action means sending it back verbatim.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodeAction {
     pub title: String,
     pub kind: Option<String>,
     raw: Value,
+}
+
+/// The semantic questions this tool asks, independent of where the answer comes
+/// from.
+///
+/// Two implementations exist: [`Server`], which spawns rust-analyzer for the
+/// duration of one command, and [`crate::daemon::Remote`], which asks a warm
+/// server that is already loaded. Callers take `&mut dyn Analyzer`, so the
+/// recipe engine never needs to know which one it has.
+pub trait Analyzer {
+    fn encoding(&self) -> PositionEncoding;
+    fn did_open(&mut self, path: &Path, text: &str) -> Result<()>;
+    fn refresh(&mut self, path: &Path, text: &str) -> Result<()>;
+    fn wait_ready(&mut self, budget: Duration) -> bool;
+    fn rename(
+        &mut self,
+        path: &Path,
+        position: Position,
+        new_name: &str,
+        budget: Duration,
+    ) -> Result<Vec<FileEdits>>;
+    fn references(
+        &mut self,
+        path: &Path,
+        position: Position,
+        budget: Duration,
+    ) -> Result<Vec<Location>>;
+    fn code_actions(
+        &mut self,
+        path: &Path,
+        range: Range,
+        budget: Duration,
+    ) -> Result<Vec<CodeAction>>;
+    fn resolve_action(&mut self, action: &CodeAction, budget: Duration) -> Result<Vec<FileEdits>>;
+    /// End this session. For a warm server that means hanging up, not stopping
+    /// the server.
+    fn shutdown(&mut self);
 }
 
 pub struct Server {
@@ -96,23 +133,51 @@ pub struct Server {
     next_id: i64,
     encoding: PositionEncoding,
     stderr: Arc<Mutex<VecDeque<String>>>,
+    /// Whether this server has ever resolved something. A cold analyzer can
+    /// reject a valid position while its crate graph is still being built, so
+    /// until it answers once, a rejection is worth retrying.
+    answered: bool,
 }
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long a "no such symbol" rejection is retried on a cold server.
+const COLD_REJECTION_GRACE: Duration = Duration::from_secs(20);
+
+/// The analyzer binary. `RUSTREWRITE_ANALYZER` exists so a builder-pinned or
+/// side-by-side rust-analyzer can be used, and so tests can prove that a
+/// structural-only run never consults it.
+pub fn analyzer_binary() -> String {
+    std::env::var("RUSTREWRITE_ANALYZER").unwrap_or_else(|_| "rust-analyzer".to_string())
+}
+
+/// Whether a JSON-RPC error is a rejection rather than a not-analysed-yet signal.
+///
+/// A `null` result means "not analysed yet", so it is retried. An error like
+/// `No references found at position` means the line and column name nothing the
+/// server can resolve — but only once the workspace is loaded, which is why the
+/// caller decides whether to believe it yet.
+fn is_definitive(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}");
+    text.contains("-32602") || text.contains("No references found at position")
+}
+
 impl Server {
     /// Spawn `rust-analyzer` and complete the initialize handshake.
     pub fn start(root: &Path) -> Result<Self> {
-        let mut child = Command::new("rust-analyzer")
+        let binary = analyzer_binary();
+        let mut child = Command::new(&binary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(root)
             .spawn()
             .with_context(|| {
-                "starting rust-analyzer\n\n\
-                 install it with `rustup component add rust-analyzer`, or point PATH at a \
-                 rust-analyzer binary"
+                format!(
+                    "starting `{binary}`\n\n\
+                     install it with `rustup component add rust-analyzer`, or point PATH at a \
+                     rust-analyzer binary"
+                )
             })?;
 
         let stdin = child.stdin.take().context("rust-analyzer stdin")?;
@@ -163,6 +228,7 @@ impl Server {
             next_id: 1,
             encoding: PositionEncoding::Utf16,
             stderr: stderr_log,
+            answered: false,
         };
 
         let response = server
@@ -305,18 +371,31 @@ impl Server {
         // caller proceed: some builds simply do not emit it, and sitting on the
         // full budget would turn every run into a coffee break.
         let silent_grace = Duration::from_secs(10);
+        let trace = std::env::var_os("RUSTREWRITE_TRACE").is_some();
         let mut active: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut saw_progress = false;
         let mut saw_begin = false;
         loop {
             if saw_begin && active.is_empty() {
+                if trace {
+                    eprintln!("[warm] ready after {:?}", started.elapsed());
+                }
                 return true;
             }
             if !saw_progress && started.elapsed() > silent_grace {
+                if trace {
+                    eprintln!(
+                        "[warm] no progress after {:?}, not waiting",
+                        started.elapsed()
+                    );
+                }
                 return false;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                if trace {
+                    eprintln!("[warm] budget spent with {} active token(s)", active.len());
+                }
                 return saw_progress && active.is_empty();
             }
             match self
@@ -335,6 +414,14 @@ impl Server {
                             .and_then(|v| v.get("kind"))
                             .and_then(Value::as_str)
                             .unwrap_or("");
+                        let title = params
+                            .and_then(|p| p.get("value"))
+                            .and_then(|v| v.get("title"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if trace {
+                            eprintln!("[warm] progress {kind} {token} {title}");
+                        }
                         saw_progress = true;
                         match kind {
                             "begin" => {
@@ -409,6 +496,14 @@ impl Server {
         budget: Duration,
     ) -> Result<Vec<FileEdits>> {
         let deadline = Instant::now() + budget;
+        // A rejection is only final once this server has answered something:
+        // a cold analyzer rejects even a correct position while it is still
+        // building its crate graph.
+        let rejection_deadline = if self.answered {
+            Instant::now()
+        } else {
+            Instant::now() + COLD_REJECTION_GRACE
+        };
         let mut delay = Duration::from_millis(250);
         let mut last_error: Option<anyhow::Error> = None;
         loop {
@@ -422,8 +517,23 @@ impl Server {
                 DEFAULT_REQUEST_TIMEOUT,
             ) {
                 Ok(Value::Null) => {}
-                Ok(value) => return parse_workspace_edit(value),
-                Err(err) => last_error = Some(err),
+                Ok(value) => {
+                    let edits = parse_workspace_edit(value)?;
+                    self.answered = true;
+                    return Ok(edits);
+                }
+                Err(err) => {
+                    if is_definitive(&err) && Instant::now() >= rejection_deadline {
+                        bail!(
+                            "rust-analyzer cannot rename the symbol at {}:{}:{}: {err}\n\
+                             Check that the line and column point at a name, not at whitespace.",
+                            path.display(),
+                            position.line + 1,
+                            position.character + 1
+                        );
+                    }
+                    last_error = Some(err);
+                }
             }
             if Instant::now() >= deadline {
                 break;
@@ -453,6 +563,11 @@ impl Server {
         // An empty list is ambiguous: no references, or not analysed yet. Give it
         // a short grace to tell the two apart, then trust the answer.
         let grace = Instant::now() + budget.min(Duration::from_secs(8));
+        let rejection_deadline = if self.answered {
+            Instant::now()
+        } else {
+            Instant::now() + COLD_REJECTION_GRACE
+        };
         let mut delay = Duration::from_millis(250);
         let mut last_error: Option<anyhow::Error> = None;
         let mut saw_empty = false;
@@ -469,13 +584,25 @@ impl Server {
                 Ok(Value::Null) => {}
                 Ok(value) => {
                     let locations = parse_locations(value)?;
+                    self.answered = true;
                     if locations.is_empty() {
                         saw_empty = true;
                     } else {
                         return Ok(locations);
                     }
                 }
-                Err(err) => last_error = Some(err),
+                Err(err) => {
+                    if is_definitive(&err) && Instant::now() >= rejection_deadline {
+                        bail!(
+                            "rust-analyzer cannot list references at {}:{}:{}: {err}\n\
+                             Check that the line and column point at a name, not at whitespace.",
+                            path.display(),
+                            position.line + 1,
+                            position.character + 1
+                        );
+                    }
+                    last_error = Some(err);
+                }
             }
             let now = Instant::now();
             if now >= deadline {
@@ -529,6 +656,7 @@ impl Server {
                 DEFAULT_REQUEST_TIMEOUT,
             )?;
             let actions = parse_code_actions(value);
+            self.answered = true;
             if !actions.is_empty() {
                 return Ok(actions);
             }
@@ -558,6 +686,74 @@ impl Server {
         let _ = self.request("shutdown", Value::Null, Duration::from_secs(5));
         self.notify("exit", Value::Null);
         thread::sleep(Duration::from_millis(100));
+    }
+
+    /// Ask the server to warm its own caches for this workspace.
+    ///
+    /// rust-analyzer builds a disk cache for dependency sources and proc-macro
+    /// expansions; priming it costs the same work once, in the background, and
+    /// saves it on the next load. The command is a hint: a build that does not
+    /// know it answers with an error, which is ignored on purpose.
+    pub fn prefill_caches(&mut self) {
+        let _ = self.request(
+            "workspace/executeCommand",
+            json!({"command": "rust-analyzer.prefillCaches", "arguments": []}),
+            Duration::from_secs(10),
+        );
+    }
+}
+
+impl Analyzer for Server {
+    fn encoding(&self) -> PositionEncoding {
+        self.encoding
+    }
+
+    fn did_open(&mut self, path: &Path, text: &str) -> Result<()> {
+        Server::did_open(self, path, text)
+    }
+
+    fn refresh(&mut self, path: &Path, text: &str) -> Result<()> {
+        Server::refresh(self, path, text)
+    }
+
+    fn wait_ready(&mut self, budget: Duration) -> bool {
+        Server::wait_ready(self, budget)
+    }
+
+    fn rename(
+        &mut self,
+        path: &Path,
+        position: Position,
+        new_name: &str,
+        budget: Duration,
+    ) -> Result<Vec<FileEdits>> {
+        Server::rename(self, path, position, new_name, budget)
+    }
+
+    fn references(
+        &mut self,
+        path: &Path,
+        position: Position,
+        budget: Duration,
+    ) -> Result<Vec<Location>> {
+        Server::references(self, path, position, budget)
+    }
+
+    fn code_actions(
+        &mut self,
+        path: &Path,
+        range: Range,
+        budget: Duration,
+    ) -> Result<Vec<CodeAction>> {
+        Server::code_actions(self, path, range, budget)
+    }
+
+    fn resolve_action(&mut self, action: &CodeAction, budget: Duration) -> Result<Vec<FileEdits>> {
+        Server::resolve_action(self, action, budget)
+    }
+
+    fn shutdown(&mut self) {
+        Server::shutdown(self)
     }
 }
 

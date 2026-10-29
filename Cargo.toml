@@ -22,3 +22,12 @@ serde_json = "1"
 serde_yaml = "0.9"
 similar = "2"
 walkdir = "2"
+
+# Starting the warm server without handing it the caller's stdout pipe needs
+# CreateProcessW directly; the stable std flag for this is nightly-only.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

@@ -589,6 +589,7 @@ dependencies = [
  "serde_yaml",
  "similar",
  "walkdir",
+ "windows-sys",
 ]
 
 [[package]]

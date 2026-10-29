@@ -5,6 +5,7 @@
 //! rewrites, and a failing compile rolls the whole run back.
 
 mod callsites;
+mod daemon;
 mod engine;
 mod recipes;
 mod semantic;
@@ -15,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use engine::{apply_to_snippet, Engine, Finding, SemanticStep};
 use recipes::{Catalog, Mode, Resolved, SemanticAction};
-use semantic::Server;
+use semantic::{Analyzer, Server};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -78,6 +79,9 @@ enum Command {
         /// Seconds to wait for the analyzer to index, for semantic recipes.
         #[arg(long, default_value_t = 180)]
         wait: u64,
+        /// Start a fresh analyzer instead of reusing the warm server.
+        #[arg(long)]
+        cold: bool,
     },
     /// Apply a recipe.
     Run {
@@ -105,6 +109,9 @@ enum Command {
         /// Seconds to wait for the analyzer to index, for semantic recipes.
         #[arg(long, default_value_t = 180)]
         wait: u64,
+        /// Start a fresh analyzer instead of reusing the warm server.
+        #[arg(long)]
+        cold: bool,
     },
     /// Run the compile (and optionally test) gate alone.
     Verify {
@@ -136,6 +143,27 @@ enum Command {
         /// Seconds to wait for the analyzer to load and index the workspace.
         #[arg(long, default_value_t = 180)]
         wait: u64,
+        /// Start a fresh analyzer instead of reusing the warm server.
+        #[arg(long)]
+        cold: bool,
+    },
+    /// Keep a warm analyzer alive for this workspace, so semantic runs skip the
+    /// load.
+    ///
+    /// The server is shared by every `rustrewrite` command on this workspace and
+    /// exits after `--idle` seconds without a request. Semantic commands start
+    /// one automatically; this command exists to start it ahead of time, and to
+    /// inspect or stop it.
+    Serve {
+        /// Stop the running server instead of starting one.
+        #[arg(long)]
+        stop: bool,
+        /// Report on the running server instead of starting one.
+        #[arg(long)]
+        status: bool,
+        /// Seconds of inactivity before the server exits. 0 keeps it alive.
+        #[arg(long, default_value_t = 900)]
+        idle: u64,
     },
 }
 
@@ -149,19 +177,30 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = absolute(&cli.path)?;
-    let catalog = Catalog::load(&cli.recipes, &root)?;
+    // Loaded per command: `serve`, `verify` and `rename` do not read recipes, and
+    // a warm server should not wait on a recipe scan it never uses.
+    let catalog = || Catalog::load(&cli.recipes, &root);
 
     match cli.command {
-        Command::List { tag, sources } => list(&catalog, tag.as_deref(), sources),
-        Command::Explain { recipe } => explain(&catalog, &recipe),
-        Command::Test { recipe } => test_examples(&catalog, recipe.as_deref()),
+        Command::List { tag, sources } => list(&catalog()?, tag.as_deref(), sources),
+        Command::Explain { recipe } => explain(&catalog()?, &recipe),
+        Command::Test { recipe } => test_examples(&catalog()?, recipe.as_deref()),
         Command::Check {
             recipe,
             diff,
             json,
             options,
             wait,
-        } => check(&catalog, &root, &recipe, diff, json, &options, wait),
+            cold,
+        } => check(
+            &catalog()?,
+            &root,
+            &recipe,
+            diff,
+            json,
+            &options,
+            AnalyzerOpts { wait, warm: !cold },
+        ),
         Command::Run {
             recipe,
             apply,
@@ -171,8 +210,9 @@ fn run() -> Result<()> {
             diff,
             options,
             wait,
+            cold,
         } => run_recipes(
-            &catalog,
+            &catalog()?,
             &root,
             &recipe,
             apply,
@@ -181,7 +221,7 @@ fn run() -> Result<()> {
             allow_dirty,
             diff,
             &options,
-            wait,
+            AnalyzerOpts { wait, warm: !cold },
         ),
         Command::Verify { test } => verify_only(&root, test),
         Command::Rename {
@@ -191,7 +231,17 @@ fn run() -> Result<()> {
             no_verify,
             allow_dirty,
             wait,
-        } => rename_symbol(&root, &at, &to, apply, !no_verify, allow_dirty, wait),
+            cold,
+        } => rename_symbol(
+            &root,
+            &at,
+            &to,
+            apply,
+            !no_verify,
+            allow_dirty,
+            AnalyzerOpts { wait, warm: !cold },
+        ),
+        Command::Serve { stop, status, idle } => serve_command(&root, stop, status, idle),
     }
 }
 
@@ -405,7 +455,7 @@ fn check(
     show_diff: bool,
     json: bool,
     options: &[String],
-    wait_secs: u64,
+    analyzer_opts: AnalyzerOpts,
 ) -> Result<()> {
     let resolved = resolve_selector(catalog, selector, options)?;
     let engine = Engine::compile(&resolved)?;
@@ -427,7 +477,7 @@ fn check(
     }
 
     if engine.has_semantic_steps() {
-        let outcome = run_semantic(root, engine.semantic_steps(), false, wait_secs)?;
+        let outcome = run_semantic(root, engine.semantic_steps(), false, analyzer_opts)?;
         findings.extend(outcome.findings);
         changed_files += outcome.writes.len();
         pending.extend(outcome.writes);
@@ -568,25 +618,51 @@ struct SemanticOutcome {
     writes: Vec<(PathBuf, String, String)>,
 }
 
-/// Run semantic steps against one language server, applying edits only when
-/// asked. Edits are always reported, so `check` can show what would change.
+/// How a command should talk to the analyzer.
+#[derive(Debug, Clone, Copy)]
+struct AnalyzerOpts {
+    /// Seconds to wait for the analyzer to load and index the workspace.
+    wait: u64,
+    /// Reuse the warm server for this workspace instead of paying the load
+    /// again.
+    warm: bool,
+}
+
+/// Pick where semantic answers come from: a warm server when one is available,
+/// otherwise a server that lives for this command only.
+fn analyzer(root: &Path, opts: AnalyzerOpts) -> Result<Box<dyn Analyzer>> {
+    if opts.warm {
+        match daemon::ensure(root) {
+            Ok(remote) => return Ok(Box::new(remote)),
+            Err(err) => eprintln!(
+                "note: warm server unavailable ({err:#}); starting a one-shot analyzer instead"
+            ),
+        }
+    }
+    Ok(Box::new(Server::start(root)?))
+}
+
+/// Run semantic steps against one analyzer, applying edits only when asked.
+/// Edits are always reported, so `check` can show what would change.
 fn run_semantic(
     root: &Path,
     steps: &[SemanticStep],
     write: bool,
-    wait_secs: u64,
+    opts: AnalyzerOpts,
 ) -> Result<SemanticOutcome> {
     let mut outcome = SemanticOutcome {
         findings: Vec::new(),
         writes: Vec::new(),
     };
     if steps.is_empty() {
+        // Nothing semantic to ask: do not start an analyzer at all. This is what
+        // keeps a structural run at structural speed.
         return Ok(outcome);
     }
 
-    let mut server = Server::start(root)?;
+    let mut server = analyzer(root, opts)?;
     let encoding = server.encoding();
-    let budget = std::time::Duration::from_secs(wait_secs);
+    let budget = std::time::Duration::from_secs(opts.wait);
     let mut opened: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut ready = false;
 
@@ -684,7 +760,7 @@ fn run_semantic(
             _ => {
                 let op = argument_op(step)?;
                 let rewrites = plan_argument_rewrites(
-                    &mut server,
+                    server.as_mut(),
                     step,
                     &op,
                     &path,
@@ -694,7 +770,7 @@ fn run_semantic(
                     budget,
                 )?;
                 apply_rewrites(
-                    &mut server,
+                    server.as_mut(),
                     &mut opened,
                     &step.recipe,
                     rewrites,
@@ -777,7 +853,7 @@ fn argument_op(step: &SemanticStep) -> Result<callsites::Op> {
 /// arguments of every resolved call site.
 #[allow(clippy::too_many_arguments)]
 fn plan_argument_rewrites(
-    server: &mut Server,
+    server: &mut dyn Analyzer,
     step: &SemanticStep,
     op: &callsites::Op,
     decl_path: &Path,
@@ -892,7 +968,7 @@ fn plan_argument_rewrites(
 /// Apply the planned list rewrites, one file at a time, rejecting overlaps
 /// instead of corrupting a file when two rewrites disagree.
 fn apply_rewrites(
-    server: &mut Server,
+    server: &mut dyn Analyzer,
     opened: &mut std::collections::HashSet<PathBuf>,
     recipe: &str,
     rewrites: Vec<(PathBuf, std::ops::Range<usize>, String)>,
@@ -1006,7 +1082,7 @@ fn run_recipes(
     allow_dirty: bool,
     show_diff: bool,
     options: &[String],
-    wait_secs: u64,
+    analyzer_opts: AnalyzerOpts,
 ) -> Result<()> {
     let resolved = resolve_selector(catalog, selector, options)?;
     let engine = Engine::compile(&resolved)?;
@@ -1049,7 +1125,7 @@ fn run_recipes(
     // Semantic steps run after structural edits are on disk, because the
     // language server resolves positions against files, not against our buffers.
     if engine.has_semantic_steps() {
-        let outcome = run_semantic(root, engine.semantic_steps(), apply, wait_secs)?;
+        let outcome = run_semantic(root, engine.semantic_steps(), apply, analyzer_opts)?;
         findings.extend(outcome.findings);
         writes.extend(outcome.writes);
     }
@@ -1175,7 +1251,7 @@ fn rename_symbol(
     apply: bool,
     verify_after: bool,
     allow_dirty: bool,
-    wait_secs: u64,
+    opts: AnalyzerOpts,
 ) -> Result<()> {
     let (file, line, column) = parse_location(at)?;
     let root = util::normalize_path(root)?;
@@ -1211,13 +1287,13 @@ fn rename_symbol(
         None
     };
 
-    let mut server = Server::start(&root)?;
+    let mut server = analyzer(&root, opts)?;
     let encoding = server.encoding();
     let position = semantic::char_position(&original, line - 1, column - 1, encoding)
         .with_context(|| format!("line {line} is past the end of {}", path.display()))?;
 
     server.did_open(&path, &original)?;
-    let ready = server.wait_ready(std::time::Duration::from_secs(wait_secs));
+    let ready = server.wait_ready(std::time::Duration::from_secs(opts.wait));
     if !ready {
         eprintln!("note: no indexing progress reported; asking the analyzer directly");
     }
@@ -1226,7 +1302,7 @@ fn rename_symbol(
         &path,
         position,
         new_name,
-        std::time::Duration::from_secs(wait_secs),
+        std::time::Duration::from_secs(opts.wait),
     )?;
     server.shutdown();
     drop(server);
@@ -1306,4 +1382,31 @@ fn rename_symbol(
     }
 
     Ok(())
+}
+
+fn serve_command(root: &Path, stop: bool, status: bool, idle_secs: u64) -> Result<()> {
+    if stop {
+        if daemon::stop(root)? {
+            println!("stopped the warm server for {}", root.display());
+        } else {
+            println!("no warm server is running for {}", root.display());
+        }
+        return Ok(());
+    }
+    if status {
+        match daemon::status(root)? {
+            Some(status) => {
+                println!("warm server pid {} for {}", status.pid, root.display());
+                println!(
+                    "  indexed    {}",
+                    if status.ready { "yes" } else { "not yet" }
+                );
+                println!("  requests   {}", status.queries);
+                println!("  idle for   {}s", status.idle_secs);
+            }
+            None => println!("no warm server is running for {}", root.display()),
+        }
+        return Ok(());
+    }
+    daemon::serve(root, std::time::Duration::from_secs(idle_secs))
 }

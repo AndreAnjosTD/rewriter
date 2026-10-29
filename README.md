@@ -46,6 +46,7 @@ That trade is why the gate is mandatory rather than optional.
 | `check [--recipe R] [--diff] [--json]` | Report findings. Exits 1 if there are any, so CI can hold the line. Never writes. |
 | `run [--recipe R] [--apply] [--test] [--diff]` | Apply a recipe, then gate it. Without `--apply` it is a dry run. |
 | `rename --at file:line:col --to NAME [--apply]` | Rename one resolved symbol using rust-analyzer's type information. |
+| `serve [--status] [--stop] [--idle SECS]` | Keep a warm analyzer for this workspace, inspect it, or stop it. |
 | `verify [--test]` | The gate on its own: format, compile, optionally test. |
 
 Recipes that take parameters accept `--set key=value`, repeatable, on `check` and `run`.
@@ -68,8 +69,28 @@ What it buys you, demonstrated in `tests/semantic.rs`: with `Vec::len` and a cus
 Requirements and cost:
 
 - `rust-analyzer` on `PATH`. Install with `rustup component add rust-analyzer` — and for a project that pins a toolchain in `rust-toolchain.toml`, add it for that toolchain too.
-- The first request pays for loading the workspace: about 5 s on a small crate, about 30 s on a 40k-line workspace. `--wait` sets the budget (default 180 s).
+- The first request pays for loading the workspace: about 2 s on a small crate, about 17 s on a 35k-line workspace. `--wait` sets the budget (default 180 s).
 - The server may refuse a rename. A trait implementation member cannot be renamed, because the trait requires the name. That is reported as a refusal and nothing is written.
+
+### The warm server
+
+Loading a workspace is the whole cost, and it is paid once per server rather than once per command. The first semantic command on a workspace starts a server in the background; later commands attach to it and skip the load:
+
+```
+rustrewrite rename --at cli/src/exit.rs:112:12 --to status_code   # 17.1 s, starts the server
+rustrewrite rename --at cli/src/exit.rs:112:12 --to status_code   #  0.26 s, same process
+rustrewrite serve --status                                        # who is serving, and how many requests
+rustrewrite serve --stop
+```
+
+Those two numbers are the same rename on a 35k-line workspace. A recipe run goes from tens of seconds to about one.
+
+- Semantic commands start one automatically. Structural-only commands never start an analyzer at all.
+- The server is keyed by workspace root, so two projects get two servers.
+- It exits after 15 minutes without a request; `serve --idle SECS` changes that when started by hand, and `0` keeps it alive.
+- `--cold` on `check`, `run` and `rename` bypasses it and starts a one-shot analyzer, which is what you want in CI or when comparing timings.
+- `RUSTREWRITE_STATE_DIR` relocates the small state file that names the server's port. `RUSTREWRITE_TRACE=1` makes a foreground `serve` log every request it answers.
+- One client at a time is served; a second command waits its turn instead of starting a second analyzer.
 
 ### As recipes
 

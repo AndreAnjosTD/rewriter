@@ -1,6 +1,6 @@
 # Scope: a type-attribution layer for rustrewrite
 
-Status: phases 1-4 implemented; phase 5 not started.
+Status: all five phases implemented.
 
 The question this answers: what would it take to make `rustrewrite` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
 
@@ -100,7 +100,7 @@ Non-negotiable details:
 | 2 | `kind: semantic` step, `--diff`/`--check` support, two flagship recipes (`rust.migrate.change-method-name`, `rust.migrate.change-type`) | **Done** — see results below | 2–3 d |
 | 3 | References-driven call-site rewriting for the argument primitives | **Done** — see results below | 4–6 d |
 | 4 | Assists as recipe sources: enumerate `codeAction` results and expose them by id | **Done** — see results below | 3–5 d |
-| 5 | Performance and lifecycle: cache the loaded workspace, `prefill_caches`, skip the server when no semantic step is present | Cold run on NodeHugDesktop under 90 s, warm semantic run under 10 s | 2–3 d |
+| 5 | Performance and lifecycle: warm server per workspace, `prefill_caches`, skip the server when no semantic step is present | **Done** — see results below: 17.1 s cold, 0.26 s warm | 2-3 d |
 
 **MVP is phases 1 and 2: about one week of focused work**, and it delivers the two primitives that carry most of OpenRewrite's value.
 
@@ -188,11 +188,37 @@ The protocol has three traps, all found by probing rather than reading:
 
 Verified: `Inline variable` on `let sum = items.iter().sum::<u32>();` rewrites the function to `items.iter().sum::<u32>() * 2`, the gate passes, and `check` reports the same three edits without writing. A wrong title fails with the available list. Twenty-two integration tests across four files, about 34 seconds.
 
+## Phase 5 results
+
+A warm server per workspace. The first semantic command starts it in the background; later commands attach over a loopback socket and skip the load entirely.
+
+Measured on the same 35k-line workspace used in phase 1, one dry-run rename of `cli/src/exit.rs:112:12`:
+
+| Run | Before | Now |
+| --- | --- | --- |
+| First command on a workspace (starts the server) | 33 s | 17.1 s |
+| Every following command | 33 s | 0.26 s |
+| A semantic recipe (`change-method-name`, dry run) | 33 s | 1.34 s |
+
+The phase's exit criterion was a cold run under 90 s and a warm run under 10 s; both hold with room.
+
+Four things this phase taught, all of them found by running it:
+
+1. **A Windows child inherits every inheritable handle of its parent.** Starting the server with `Command::spawn` and null stdio left the caller's stdout pipe open inside the server, so `rustrewrite ... | tee log` never saw the pipe close and looked like a hang for as long as the server lived. The stable fix is `CreateProcessW` with `bInheritHandles = FALSE`; std exposes that flag only on nightly. This also explains why the warm tests passed in isolation but behaved strangely under a capturing harness.
+2. **An accepted socket inherits the listener's non-blocking flag on Windows.** The listener is non-blocking so the accept loop can check its idle timer; every accepted connection therefore failed its second read with `WouldBlock` and was closed midway. One `set_nonblocking(false)` per connection fixes it. Nothing in the error message pointed at this.
+3. **Progress notifications are not a readiness signal.** rust-analyzer emits `$/progress` for unrelated work such as fetching dependencies, so "all progress tokens ended" can be true within milliseconds of startup while the crate graph is still empty. The real signal is the answer to the actual query: `null` means "ask again", a result means ready. Readiness is now advisory and the query loop does the waiting.
+4. **A rejection on a cold server is not final.** `No references found at position` arrives both for a genuinely wrong line and for a valid line on a workspace that has not finished loading. Rejections are therefore retried for 20 s while the server has never resolved anything, and reported immediately once it has — a typo on a warm workspace now fails in a second instead of burning the full 180 s budget.
+
+The server also asks for `rust-analyzer.prefillCaches` once it is ready, which is what makes the *next* cold start cheaper. It is a hint: a build that does not know the command answers with an error that is ignored.
+
+Verified: 28 tests across six files, including four new ones — a structural recipe proving it never launches an analyzer, a semantic run naming the missing binary, a second run served by the same process, and `--cold` leaving no server behind.
+
 ## Risks
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
-| 78 s / 2 GB cold load on a real workspace | High — makes semantic recipes feel unlike the rest of the tool | Only start the server when a semantic step exists; cache the loaded workspace; document the cost per recipe |
+| Cold load on a real workspace | Medium | Measured at 17 s; paid once per workspace, then 0.26 s per command through the warm server |
+| A warm server holds ~2 GB until it exits | Medium | 15-minute idle timeout, `serve --stop`, `--cold`, and no server at all for structural recipes |
 | Toolchain drift in `ra_ap_*` | Removed by choosing Option A | The LSP protocol is stable; the binary ships with the toolchain |
 | Server hangs or crashes mid-run | Medium | Timeouts on every request, kill the server, treat as a failed step and roll back |
 | Rename refuses valid-looking targets (trait impls, generated code) | Medium — already observed | Report `0 edits` explicitly as "the server declined", never as success |
@@ -204,7 +230,7 @@ Verified: `Inline variable` on `let sum = items.iter().sum::<u32>();` rewrites t
 - Compiling or type-checking: rust-analyzer does that for its own analysis; the correctness gate keeps using `cargo`, which is the authority.
 - Macro expansion semantics beyond what the server reports.
 - Non-Cargo projects beyond a clear error message.
-- A persistent daemon, warm-start server, or background indexing — phase 5 at the earliest.
+- Sharing one warm server between different workspaces, or across machines.
 
 ## Recommendation
 

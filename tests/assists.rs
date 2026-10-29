@@ -50,12 +50,14 @@ fn fixture(suffix: &str) -> PathBuf {
 }
 
 fn run(args: &[&str], dir: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rustrewrite"))
-        .args(args)
-        .arg("--path")
-        .arg(dir)
-        .output()
-        .expect("running rustrewrite")
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rustrewrite"));
+    command.args(args).arg("--path").arg(dir);
+    // Tests use a throwaway workspace per case, so a warm server would never be
+    // reused and would outlive the test. The warm path has its own test file.
+    if matches!(args.first().copied(), Some("run" | "check" | "rename")) {
+        command.arg("--cold");
+    }
+    command.output().expect("running rustrewrite")
 }
 
 fn read(dir: &Path) -> String {
