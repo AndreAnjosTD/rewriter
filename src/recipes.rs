@@ -93,6 +93,11 @@ pub struct OptionSpec {
     /// only way to fill a `${name}` placeholder in a step.
     #[serde(default)]
     pub default: Option<String>,
+    /// Whether the value is substituted as literal text into an ast-grep
+    /// pattern or template. A value ast-grep would read as a metavariable is
+    /// refused instead of being substituted.
+    #[serde(default)]
+    pub literal: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -161,6 +166,10 @@ pub struct Example {
     pub after: String,
     #[serde(default)]
     pub why: Option<String>,
+    /// Option values for this example, the equivalent of `--set` on a run.
+    /// A recipe that declares required options cannot be proven without them.
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -530,6 +539,32 @@ pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String
             }
         }
     }
+    // A literal option is pasted into an ast-grep pattern or template, so a
+    // value ast-grep would read as a metavariable would silently widen the match
+    // instead of matching text. Refusing is the only safe answer.
+    for (name, spec) in declared {
+        if !spec.literal {
+            continue;
+        }
+        if let Some(value) = values.get(name) {
+            if has_metavariable(value) {
+                bail!(
+                    "recipe `{}` option `{name}` is substituted as literal text, so it \
+                     cannot contain an ast-grep metavariable such as `$NAME`, `$5` or `$$$`.\n\
+                     Nothing was rewritten.",
+                    resolved.recipe.id
+                );
+            }
+            if value.contains("${") {
+                bail!(
+                    "recipe `{}` option `{name}` is substituted as literal text, so it \
+                     cannot contain `${{...}}`, which the recipe engine reads as an option \
+                     placeholder.\nNothing was rewritten.",
+                    resolved.recipe.id
+                );
+            }
+        }
+    }
     let missing: Vec<(&String, &OptionSpec)> = declared
         .iter()
         .filter(|(name, spec)| spec.required && !values.contains_key(*name))
@@ -608,6 +643,28 @@ fn substitute(text: &str, vars: &BTreeMap<String, String>) -> String {
         out = out.replace(&format!("${{{key}}}"), value);
     }
     out
+}
+
+/// Whether ast-grep would read part of `value` as a metavariable.
+///
+/// This mirrors ast-grep's own rule so a literal option can still contain a
+/// dollar sign: `$NAME`, `$_` and `$5` are captures (the fix template parser
+/// accepts a digit as a name), and three or more dollars start a multi
+/// metavariable, while `$name` stays literal text.
+fn has_metavariable(value: &str) -> bool {
+    let mut dollars = 0usize;
+    for c in value.chars() {
+        if c == '$' {
+            dollars += 1;
+            continue;
+        }
+        let capture = dollars > 0 && (c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if dollars >= 3 || capture {
+            return true;
+        }
+        dollars = 0;
+    }
+    dollars >= 3
 }
 
 fn substitute_value(value: &mut serde_yaml::Value, vars: &BTreeMap<String, String>) {

@@ -217,3 +217,31 @@ fn unknown_recipe_fails_with_a_useful_message() {
         "expected the catalog listing in:\n{text}"
     );
 }
+
+#[test]
+fn a_literal_option_refuses_a_metavariable_dollar() {
+    let dir = fixture("literal-dollar");
+    let output = run(
+        &[
+            "check",
+            "--recipe",
+            "rust.migrate.replace-string-literal",
+            "--set",
+            "from=$HOME",
+            "--set",
+            "to=/root",
+        ],
+        &dir,
+    );
+
+    assert!(
+        !output.status.success(),
+        "a literal containing a metavariable must be refused, not matched:\n{}",
+        stdout(&output)
+    );
+    assert!(
+        stderr(&output).contains("cannot contain an ast-grep metavariable"),
+        "expected the literal-option refusal in:\n{}",
+        stderr(&output)
+    );
+}

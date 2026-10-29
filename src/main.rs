@@ -14,6 +14,9 @@ mod signature;
 mod util;
 mod verify;
 
+#[cfg(test)]
+mod idempotency;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use engine::{apply_to_snippet, Engine, Finding, SemanticStep};
@@ -281,6 +284,15 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// One example's view of a recipe: the resolved steps with that example's
+/// `options` applied, so a parameterized recipe is proven with real values
+/// rather than with `${name}` placeholders.
+fn resolve_example(resolved: &Resolved, example: &recipes::Example) -> Result<Resolved> {
+    let mut one = resolved.clone();
+    recipes::apply_options(&mut one, &example.options)?;
+    Ok(one)
+}
+
 fn list(catalog: &Catalog, tag: Option<&str>, sources: bool) -> Result<()> {
     let mut any = false;
     for recipe in catalog.all() {
@@ -390,7 +402,9 @@ fn explain(catalog: &Catalog, selector: &str) -> Result<()> {
         println!();
         println!("examples:");
         for (index, example) in recipe.examples.iter().enumerate() {
-            let got = apply_to_snippet(&resolved, &example.before)?;
+            let example_resolved = resolve_example(&resolved, example)
+                .with_context(|| format!("example {}", index + 1))?;
+            let got = apply_to_snippet(&example_resolved, &example.before)?;
             let ok = got == example.after;
             let status = if ok { "PASS" } else { "FAIL" };
             println!("  [{status}] example {}", index + 1);
@@ -452,7 +466,9 @@ fn test_examples(catalog: &Catalog, selector: Option<&str>) -> Result<()> {
             continue;
         }
         for (index, example) in resolved.recipe.examples.iter().enumerate() {
-            let got = apply_to_snippet(&resolved, &example.before)?;
+            let example_resolved = resolve_example(&resolved, example)
+                .with_context(|| format!("example {}", index + 1))?;
+            let got = apply_to_snippet(&example_resolved, &example.before)?;
             if got == example.after {
                 passed += 1;
             } else {
