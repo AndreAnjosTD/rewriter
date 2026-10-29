@@ -38,23 +38,44 @@ These are the reusable building blocks — the ones a declarative recipe compose
 
 | Verdict | Count | Recipes |
 | --- | ---: | --- |
-| **Shipped as Rust recipes** | 2 | `ReplaceConstant` → `rust.modernize.legacy-numeric-constants`; `RemoveMethodInvocations` → `rust.idiom.debug-macro-removal` |
-| **Covered by another mechanism** | 2 | `OrderImports` → `rustfmt` (on by default); `RemoveUnusedImports` → `cargo fix` |
+| **Shipped as Rust recipes** | 10 | `ReplaceConstant`, `RemoveMethodInvocations`, plus the eight type-attribution primitives listed below |
+| **Covered by another mechanism** | 4 | `OrderImports` → `rustfmt` (on by default); `RemoveUnusedImports` → `cargo fix`; `InlineMethodCalls` and `ShortenFullyQualifiedTypeReferences` → `rust.migrate.assist`, which runs the rust-analyzer assist for each |
 | **Expressible, needs engine work** | 16 | `AddImport`, `AddLicenseHeader`, `ChangePackage`, `ChangePackageInStringLiteral`, `ChangeTypeInStringLiteral`, `ReplaceStringLiteralValue`, `ReplaceStringLiteralWithConstant`, `ChangeMethodAccessLevel`, `NoStaticImport`, `UseStaticImport`, `RemoveAnnotation`, `RemoveAnnotationAttribute`, `ReplaceAnnotation`, `AddCommentToImport`, `AddCommentToMethod`, `AddCommentToMethodInvocations` |
-| **Needs type attribution** | 18 | `ChangeType`, `ChangeMethodName`, `ChangeMethodTargetToStatic`, `ChangeMethodTargetToVariable`, `ChangeMethodInvocationReturnType`, `ChangeStaticFieldToMethod`, `ChangeAnnotationAttributeName`, `AddOrUpdateAnnotationAttribute`, `AddMethodParameter`, `AddLiteralMethodArgument`, `AddNullMethodArgument`, `DeleteMethodArgument`, `ReorderMethodArguments`, `InlineMethodCalls`, `ShortenFullyQualifiedTypeReferences`, `SimplifyMethodChain`, `ReplaceMethodInvocationWithConstant`, `ReplaceConstantWithAnotherConstant` |
-
-Six of those 18 have since shipped, driven by the language server rather than by syntax: `rust.migrate.change-type`, `rust.migrate.change-method-name`, and the argument family (`delete-argument`, `add-argument`, `reorder-arguments`), which together cover `DeleteMethodArgument`, `AddMethodParameter`, `AddLiteralMethodArgument` and `ReorderMethodArguments`.
-
-Two more — `InlineMethodCalls` and `ShortenFullyQualifiedTypeReferences` — are reachable indirectly: rust-analyzer ships an assist for each, and `rust.migrate.assist` runs any assist by title. See [`type-attribution-scope.md`](type-attribution-scope.md).
+| **Still open, needs type attribution** | 8 | `ChangeMethodTargetToStatic`, `ChangeMethodTargetToVariable`, `ChangeStaticFieldToMethod`, `ChangeAnnotationAttributeName`, `AddOrUpdateAnnotationAttribute`, `AddNullMethodArgument`, `SimplifyMethodChain`, `ReplaceMethodInvocationWithConstant` |
 | **Not applicable** | 7 | `CreateEmptyJavaClass`, `RandomizeId`, `RecipeMarkupDemonstration`, `RemoveMethodThrows`, `RemoveObjectsIsNull`, `UpdateSourcePositions`, `SimplifySingleElementAnnotation` |
 
-The 18 in the type-attribution bucket are the heart of OpenRewrite, and they are exactly what a syntax-only engine cannot do.
+Ten of the original 18 type-attribution primitives have shipped. Eight are driven by `textDocument/rename` and `textDocument/references`:
 
-`ChangeType` needs to know that an identifier resolves to the old fully-qualified type before renaming it.
+| OpenRewrite | Rust recipe |
+| --- | --- |
+| `ChangeType` | `rust.migrate.change-type` |
+| `ChangeMethodName` | `rust.migrate.change-method-name` |
+| `ChangeMethodInvocationReturnType` | `rust.migrate.change-return-type` |
+| `ReplaceConstantWithAnotherConstant` | `rust.migrate.rename-symbol` (the rename form) |
+| `DeleteMethodArgument` | `rust.migrate.delete-argument` |
+| `AddMethodParameter`, `AddLiteralMethodArgument` | `rust.migrate.add-argument` — one recipe, because Rust has no optional parameters |
+| `ReorderMethodArguments` | `rust.migrate.reorder-arguments` |
+
+The other two, `InlineMethodCalls` and `ShortenFullyQualifiedTypeReferences`, are reachable through `rust.migrate.assist`, which runs any rust-analyzer assist by title. See [`type-attribution-scope.md`](type-attribution-scope.md).
+
+Type attribution is what makes the shipped recipes safe: `ChangeType` needs to know that an identifier resolves to the old fully-qualified type before renaming it.
 
 Rust has the information — `rust-analyzer` computes it — but a tree-sitter engine does not, and renaming every occurrence of a name without type information is how a refactoring tool deletes a customer's data.
 
-The compile gate catches breakage, not silent misbinding. So these stay out until there is a semantic layer.
+The compile gate catches breakage, not silent misbinding. The verdicts below record why each of the eight remaining primitives is either Rust-inapplicable or not worth a semantic action.
+
+### Per-primitive verdicts for the 8 still open
+
+| OpenRewrite primitive | Rust analogue | Verdict |
+| --- | --- | --- |
+| `ChangeMethodTargetToStatic` | none | **No.** Rust has no instance-to-static rewiring: an associated function has no receiver, so there is no `receiver.assoc()` call to rewrite. Turning a method into an associated function is a signature change plus `Type::f(recv)` at every call site, which is a different refactor, not this primitive. |
+| `ChangeMethodTargetToVariable` | replace the receiver expression at resolved call sites | **Not worth building yet.** It is expressible: ask for references, then rewrite each receiver span. But the edit is per-migration (which receiver, which variable) and nothing in the current catalog needs it. A structural `$RECEIVER.method()` pattern is wrong whenever another type shares the method name, so the honest form would be a new semantic action; there is no demand for one yet. |
+| `ChangeStaticFieldToMethod` | associated const → associated function | **No.** The replacement function has to exist and mean the same thing, and Rust code would keep the const. Rewriting `Type::CONST` to `Type::get()` at every resolved use is mechanically possible with the references layer, but it is an API redesign, not a rewrite. |
+| `ChangeAnnotationAttributeName` | `#[old]` → `#[new]` | **Structural, not semantic.** Attributes are syntax, so an ast-grep rule on `attribute_item` can rename one; no type attribution is required. Worth writing only for a named macro's vocabulary (`serde`, `clap`), and as a specific recipe rather than a general primitive. |
+| `AddOrUpdateAnnotationAttribute` | add or update an attribute argument | **Structural, and macro-specific.** `#[serde(rename = "...")]` is a text edit inside an attribute. OpenRewrite's version is typed for Java annotations; Rust attributes are arbitrary token trees, so a general primitive has nothing to resolve. |
+| `AddNullMethodArgument` | `None` for `Option<T>` parameters | **Subsumed.** Rust has no null. Where the parameter is `Option<T>`, `rust.migrate.add-argument --set argument=None` already writes it at every call site; a separate null primitive would be a worse-named duplicate. |
+| `SimplifyMethodChain` | a named chain → a combined call | **No general primitive.** Collapsing `a.b().c()` into `a.bc()` requires knowing the combined method means the same thing; type attribution proves it exists, not that it is equivalent. In Rust the honest form is a specific structural recipe for a named chain (`.iter().cloned().collect()` and friends), which the pattern engine already handles. |
+| `ReplaceMethodInvocationWithConstant` | a resolved call → a constant expression | **Feasible, not built.** Resolve the function, ask for its references, and replace each call expression with a constant path; the references layer and the AST call-site detection already exist. It is a new action rather than a new capability, and no migration here has needed it yet. |
 
 ## Static analysis and code quality
 
@@ -94,6 +115,8 @@ Shipped because clippy does not cover them, or because the result reads better t
 | `rust.idiom.debug-macro-removal` | fix | `RemoveSystemOutPrintln` |
 | `rust.idiom.explicit-unit-return` | fix | none — Rust-specific idiom |
 | `rust.modernize.legacy-numeric-constants` | fix | `ReplaceConstant` |
+| `rust.migrate.change-return-type` | semantic | `ChangeMethodInvocationReturnType` |
+| `rust.migrate.rename-symbol` | semantic | `ReplaceConstantWithAnotherConstant` (the rename form) |
 | `rust.scan.transmute` | scan | `AvoidUnsafePackage` |
 | `rust.scan.process-exit` | scan | `FindSystemAndRuntimeExitCalls` |
 | `rust.scan.hardcoded-secret` | scan | `AvoidHardcodedCredentials` |
@@ -107,13 +130,11 @@ Honesty about the failures is more useful than a longer catalog.
 | --- | --- |
 | `&Vec<T>` → `&[T]` in parameters | Type position. `&Vec<$T>` is not a valid expression, so ast-grep's pattern parser rejects it, and `kind` + `regex` cannot capture the type parameter for the replacement. |
 | `try!(expr)` → `(expr)?` | `try` is a reserved keyword in the current grammar, so no pattern parses. Only a regex over the macro's raw text would match, and a regex cannot capture the inner expression to rewrite it. |
-| `ChangeMethodName` | Without type attribution it renames every same-named method in the codebase, including ones on unrelated types. That is a footgun, not a recipe. |
+| `ChangeMethodName` | Without type attribution it renames every same-named method in the codebase, including ones on unrelated types. That is a footgun, not a recipe. (It shipped as `rust.migrate.change-method-name` once the type-attribution layer existed.) |
 
-## What would close the gap
+## What would close the remaining gap
 
-In rough order of value per unit of work:
+The type-attribution layer and recipe options are shipped; the per-primitive verdicts above record why the last eight type-attribution primitives are not next. What is left:
 
-1. **A type-attribution layer.** `rust-analyzer` exposes diagnostics, symbol resolution and assists over LSP. Driving it would unlock the whole `ChangeType` / `ChangeMethodName` / `ReorderMethodArguments` family, which is 18 of the 45 primitives and most of the catalog's conceptual weight. Scoped, with measurements, in [`type-attribution-scope.md`](type-attribution-scope.md).
-2. **Import and header edits.** `AddImport`, `AddLicenseHeader` and the comment recipes need a step kind that inserts text at a file position rather than replacing a match. Small engine addition, unlocks 6 recipes.
-3. **String-literal rewrites.** `ChangePackageInStringLiteral`, `ReplaceStringLiteralValue` and `ChangeTypeInStringLiteral` need a rule that matches inside a literal; the engine supports this today but the recipes are not written.
-4. **Recipe options.** OpenRewrite parameterizes `ChangeType` with `oldFullyQualifiedTypeName` / `newFullyQualifiedTypeName`. This tool hard-codes each migration as its own recipe. A `${option}` substitution with `--set` would make the catalog generative instead of enumerative.
+1. **Import and header edits.** `AddImport`, `AddLicenseHeader` and the comment recipes need a step kind that inserts text at a file position rather than replacing a match. Small engine addition, unlocks 6 recipes.
+2. **String-literal rewrites.** `ChangePackageInStringLiteral`, `ReplaceStringLiteralValue` and `ChangeTypeInStringLiteral` need a rule that matches inside a literal; the engine supports this today but the recipes are not written.

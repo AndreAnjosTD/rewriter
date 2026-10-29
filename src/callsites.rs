@@ -123,7 +123,7 @@ fn list_site(text: &str, node: Node<'_, StrDoc<SupportLang>>) -> ListSite {
     ListSite { range, items }
 }
 
-fn innermost<'t>(
+pub(crate) fn innermost<'t>(
     root: Node<'t, StrDoc<SupportLang>>,
     offset: usize,
     kinds: &[&str],
