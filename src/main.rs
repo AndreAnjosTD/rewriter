@@ -464,7 +464,13 @@ fn check(
             );
             let supplied = options
                 .iter()
-                .map(|option| format!(" --set {option}"))
+                .map(|option| {
+                    if option.contains(' ') {
+                        format!(" --set \"{option}\"")
+                    } else {
+                        format!(" --set {option}")
+                    }
+                })
                 .collect::<String>();
             println!("write them with: rustrewrite run --recipe {selector} --apply{supplied}");
         }
