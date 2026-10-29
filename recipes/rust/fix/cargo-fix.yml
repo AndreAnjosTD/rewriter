@@ -1,0 +1,12 @@
+id: rust.fix.cargo-fix
+name: Apply compiler suggestions
+description: >-
+  Runs `cargo fix` across all targets. This is the semantic half of the catalog:
+  the compiler already knows the correct replacement for its own diagnostics, and
+  this recipe puts that knowledge behind the same gate as the structural recipes.
+tags: [compiler]
+risk: medium
+
+steps:
+  - kind: cargo
+    command: ["cargo", "fix", "--all-targets", "--allow-dirty", "--allow-staged"]

@@ -1,0 +1,33 @@
+id: rust.idiom.bool-compare
+name: Remove comparisons against boolean literals
+description: >-
+  `x == true` is just `x`, and `x == false` is `!x`. Comparing a bool to a
+  literal adds a step without adding meaning, and it hides when a condition is
+  inverted.
+tags: [idiom]
+risk: low
+
+steps:
+  - rule:
+      pattern: $X == true
+    fix: $X
+  - rule:
+      pattern: $X != false
+    fix: $X
+  - rule:
+      pattern: $X == false
+    fix: "!$X"
+  - rule:
+      pattern: $X != true
+    fix: "!$X"
+
+examples:
+  - before: if enabled == true { start(); }
+    after: if enabled { start(); }
+    why: The literal adds nothing.
+  - before: if ready == false { wait(); }
+    after: if !ready { wait(); }
+    why: A false comparison is a negation.
+  - before: let differs = left != right == true;
+    after: let differs = left != right;
+    why: The inner comparison is preserved, only the literal comparison goes.

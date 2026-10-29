@@ -1,0 +1,31 @@
+id: rust.migrate.log-to-tracing
+name: Move log macros to tracing
+description: >-
+  Rewrites `log::level!` calls to `tracing::level!`. The two macro families are
+  call-compatible, so the migration is mechanical, but `tracing` must be a
+  dependency before this runs; the compile gate is what catches it when it is
+  not.
+tags: [migrate, logging]
+risk: medium
+
+steps:
+  - rule:
+      pattern: log::info!($$$ARGS)
+    fix: tracing::info!($$$ARGS)
+  - rule:
+      pattern: log::warn!($$$ARGS)
+    fix: tracing::warn!($$$ARGS)
+  - rule:
+      pattern: log::error!($$$ARGS)
+    fix: tracing::error!($$$ARGS)
+  - rule:
+      pattern: log::debug!($$$ARGS)
+    fix: tracing::debug!($$$ARGS)
+  - rule:
+      pattern: log::trace!($$$ARGS)
+    fix: tracing::trace!($$$ARGS)
+
+examples:
+  - before: log::info!("connected to {}", peer);
+    after: tracing::info!("connected to {}", peer);
+    why: The macros take the same arguments.

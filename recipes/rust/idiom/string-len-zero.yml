@@ -1,0 +1,33 @@
+id: rust.idiom.string-len-zero
+name: Use is_empty() instead of comparing len() to zero
+description: >-
+  `len() == 0` and `len() != 0` appear in code that predates the is_empty
+  convention. is_empty() says the same thing, reads better, and is the method
+  clippy::len_zero steers toward.
+tags: [idiom, std]
+risk: low
+
+steps:
+  - rule:
+      pattern: $X.len() == 0
+    fix: $X.is_empty()
+  - rule:
+      pattern: 0 == $X.len()
+    fix: $X.is_empty()
+  - rule:
+      pattern: $X.len() != 0
+    fix: "!$X.is_empty()"
+  - rule:
+      pattern: 0 != $X.len()
+    fix: "!$X.is_empty()"
+
+examples:
+  - before: if items.len() == 0 { return; }
+    after: if items.is_empty() { return; }
+    why: The empty case becomes the method that names it.
+  - before: while buffer.len() != 0 { drain(); }
+    after: while !buffer.is_empty() { drain(); }
+    why: The negation keeps the same meaning in the loop condition.
+  - before: let missing = 0 == table.len();
+    after: let missing = table.is_empty();
+    why: Yoda-style comparisons are normalised to the same method.

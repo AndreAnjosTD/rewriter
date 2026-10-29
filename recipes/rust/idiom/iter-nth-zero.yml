@@ -1,0 +1,17 @@
+id: rust.idiom.iter-nth-zero
+name: Use next() instead of nth(0)
+description: >-
+  `nth(0)` walks zero elements and returns the first, which is what next() does
+  with no arithmetic for a reader to check.
+tags: [idiom, iterator]
+risk: low
+
+steps:
+  - rule:
+      pattern: $I.nth(0)
+    fix: $I.next()
+
+examples:
+  - before: let first = values.nth(0);
+    after: let first = values.next();
+    why: The zeroth element is the next one.

@@ -1,0 +1,21 @@
+id: rust.modernize.extern-crate
+name: Drop extern crate declarations
+description: >-
+  Since edition 2018, `extern crate name;` is redundant: dependencies are in scope
+  through the 2018 module paths. Removing the declaration also removes the
+  unused-crate-dependencies noise it causes.
+tags: [modernize, edition-2018]
+risk: medium
+
+steps:
+  - rule:
+      pattern: extern crate $NAME;
+    delete: true
+
+examples:
+  - before: |-
+      extern crate serde;
+      use serde::Serialize;
+    after: |-
+      use serde::Serialize;
+    why: The dependency is reachable without the declaration on 2018 and later.

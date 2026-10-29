@@ -1,0 +1,12 @@
+id: rust.cleanup
+name: Idiom pack plus compiler suggestions
+description: >-
+  A composite recipe: the structural idiom rewrites, then whatever the compiler
+  can repair on its own. Run this when you want the tree tidied in one pass and
+  are willing to review a wider diff.
+tags: [composite, cleanup]
+risk: medium
+
+recipes:
+  - rust.idioms
+  - rust.fix.cargo-fix

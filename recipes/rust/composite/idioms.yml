@@ -1,0 +1,14 @@
+id: rust.idioms
+name: All safe idiom rewrites
+description: >-
+  A composite recipe: the idiom pack, run in one pass. This is the recipe to run
+  on a codebase that predates the current clippy style, when you want the
+  mechanical wins without any migration risk.
+tags: [composite, idiom]
+risk: low
+
+recipes:
+  - rust.idiom.string-len-zero
+  - rust.idiom.bool-compare
+  - rust.idiom.string-from-empty
+  - rust.idiom.iter-nth-zero

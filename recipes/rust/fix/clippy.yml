@@ -1,0 +1,18 @@
+id: rust.fix.clippy
+name: Apply clippy machine-applicable fixes
+description: >-
+  Runs `cargo clippy --fix`. Clippy marks the lints it can repair without
+  judgement as machine-applicable, and this recipe applies exactly those, then
+  lets the correctness gate check the result.
+tags: [clippy]
+risk: medium
+
+steps:
+  - kind: cargo
+    command:
+      - cargo
+      - clippy
+      - --fix
+      - --all-targets
+      - --allow-dirty
+      - --allow-staged

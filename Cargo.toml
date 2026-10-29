@@ -1,0 +1,23 @@
+[package]
+name = "rustrewrite"
+version = "0.1.0"
+edition = "2021"
+description = "Recipe-driven, verified refactoring for Rust: OpenRewrite-style rewrites with an automatic correctness gate"
+license = "MIT"
+build = "build.rs"
+
+[[bin]]
+name = "rustrewrite"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+ast-grep-config = "0.51"
+ast-grep-core = "0.51"
+ast-grep-language = "0.51"
+clap = { version = "4", features = ["derive"] }
+globset = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+similar = "2"
+walkdir = "2"

@@ -1,0 +1,26 @@
+id: rust.idiom.string-from-empty
+name: Build an empty String with String::new()
+description: >-
+  `String::from("")`, `"".to_string()` and `"".to_owned()` all allocate an empty
+  String through an unnecessary path. String::new() is the direct constructor.
+tags: [idiom, std]
+risk: low
+
+steps:
+  - rule:
+      pattern: 'String::from("")'
+    fix: String::new()
+  - rule:
+      pattern: '"".to_string()'
+    fix: String::new()
+  - rule:
+      pattern: '"".to_owned()'
+    fix: String::new()
+
+examples:
+  - before: let mut buffer = String::from("");
+    after: let mut buffer = String::new();
+    why: The direct constructor says exactly what it builds.
+  - before: let label = "".to_string();
+    after: let label = String::new();
+    why: An empty literal converted to String is still an empty String.

@@ -1,0 +1,23 @@
+id: rust.scan.unwrap
+name: Find unwrap() calls outside tests
+description: >-
+  Reports every `unwrap()` outside `tests/` directories. This is a scan recipe:
+  unwrap is legitimate in a main, a prototype, or a test, so the decision stays
+  with the reviewer instead of being rewritten away.
+tags: [scan, panic-safety]
+risk: low
+mode: scan
+
+steps:
+  - rule:
+      pattern: $X.unwrap()
+    message: unwrap() panics on None/Err
+    exclude:
+      - "**/tests/**"
+      - "**/benches/**"
+      - "**/examples/**"
+
+examples:
+  - before: let value = config.get("port").unwrap();
+    after: let value = config.get("port").unwrap();
+    why: Scan recipes report the call and leave the code untouched.

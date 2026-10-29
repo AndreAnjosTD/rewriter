@@ -1,0 +1,23 @@
+id: rust.scan.mem-uninitialized
+name: Find deprecated mem::uninitialized calls
+description: >-
+  `std::mem::uninitialized` has been deprecated since Rust 1.39 because it is
+  instant undefined behaviour for most types. Report it and point the reader at
+  MaybeUninit rather than guessing at a rewrite, since the correct replacement
+  depends on how the value is used.
+tags: [scan, soundness, deprecated]
+risk: medium
+mode: scan
+
+steps:
+  - rule:
+      any:
+        - pattern: std::mem::uninitialized()
+        - pattern: mem::uninitialized()
+        - pattern: std::mem::uninitialized::<$T>()
+    message: deprecated since 1.39; use MaybeUninit
+
+examples:
+  - before: 'let buffer: [u8; 32] = unsafe { std::mem::uninitialized() };'
+    after: 'let buffer: [u8; 32] = unsafe { std::mem::uninitialized() };'
+    why: Scan recipes report the call and leave the code untouched.
