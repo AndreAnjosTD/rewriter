@@ -1,0 +1,43 @@
+id: rust.modernize.legacy-numeric-constants
+name: Use the type-associated numeric constants
+description: >-
+  `std::i32::MAX` and friends route through a module path that has been the legacy
+  spelling since the associated constants landed. `i32::MAX` is the same value with
+  no path to resolve. This is the Rust shape of OpenRewrite's ReplaceConstant: one
+  rule with a metavariable constraint covers the whole family instead of one
+  recipe per constant.
+tags: [modernize, std]
+risk: low
+
+steps:
+  - rule:
+      pattern: "std::$T::MAX"
+    constraints:
+      T:
+        regex: "^(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64)$"
+    fix: "$T::MAX"
+  - rule:
+      pattern: "std::$T::MIN"
+    constraints:
+      T:
+        regex: "^(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64)$"
+    fix: "$T::MIN"
+  - rule:
+      pattern: "std::$T::$ITEM"
+    constraints:
+      T:
+        regex: "^(f32|f64)$"
+      ITEM:
+        regex: "^(EPSILON|INFINITY|NEG_INFINITY|NAN)$"
+    fix: "$T::$ITEM"
+
+examples:
+  - before: let biggest = std::u32::MAX;
+    after: let biggest = u32::MAX;
+    why: The associated constant needs no module path.
+  - before: let low = std::i64::MIN;
+    after: let low = i64::MIN;
+    why: Signed minimum follows the same rule.
+  - before: if gap < std::f64::EPSILON { }
+    after: if gap < f64::EPSILON { }
+    why: Float constants are covered by the third rule.

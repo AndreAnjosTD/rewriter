@@ -1,0 +1,26 @@
+id: rust.idiom.debug-macro-removal
+name: Remove dbg! statements
+description: >-
+  The Rust analogue of OpenRewrite's RemoveSystemOutPrintln: a `dbg!(..)` statement
+  that is not bound to anything exists only to print, so removing it is safe. A
+  `dbg!` used for its return value is left alone, because deleting it would change
+  what the program computes.
+tags: [idiom, cleanliness]
+risk: low
+
+steps:
+  - rule:
+      pattern: dbg!($$$ARGS);
+    delete: true
+
+examples:
+  - before: |-
+      fn run() {
+          dbg!(compute());
+          finish();
+      }
+    after: |-
+      fn run() {
+          finish();
+      }
+    why: A statement-position dbg! prints and discards, so the statement goes.

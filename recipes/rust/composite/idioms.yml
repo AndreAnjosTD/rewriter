@@ -10,5 +10,10 @@ risk: low
 recipes:
   - rust.idiom.string-len-zero
   - rust.idiom.bool-compare
+  - rust.idiom.bool-return
+  - rust.idiom.double-negation
+  - rust.idiom.self-assignment
   - rust.idiom.string-from-empty
   - rust.idiom.iter-nth-zero
+  - rust.idiom.redundant-field-shorthand
+  - rust.idiom.explicit-unit-return

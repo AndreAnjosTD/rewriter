@@ -1,0 +1,23 @@
+id: rust.idiom.explicit-unit-return
+name: Write a bare return instead of returning the unit value
+description: >-
+  `return ();` names a value that is already implied. `return;` is the same
+  statement without the noise.
+tags: [idiom]
+risk: low
+
+steps:
+  - rule:
+      pattern: return ();
+    fix: return;
+
+examples:
+  - before: |-
+      fn stop() {
+          return ();
+      }
+    after: |-
+      fn stop() {
+          return;
+      }
+    why: The unit value is the default, so it is not written.

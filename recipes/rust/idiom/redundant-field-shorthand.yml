@@ -1,0 +1,17 @@
+id: rust.idiom.redundant-field-shorthand
+name: Use field init shorthand
+description: >-
+  `Point { x: x }` is `Point { x }`. The shorthand has been idiomatic since Rust
+  2015 and is what rustfmt and every reviewer expect.
+tags: [idiom]
+risk: low
+
+steps:
+  - rule:
+      pattern: "$S { $F: $F }"
+    fix: "$S { $F }"
+
+examples:
+  - before: "let p = Point { x: x };"
+    after: "let p = Point { x };"
+    why: The field and the binding share a name, so one name is enough.

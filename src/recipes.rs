@@ -57,6 +57,10 @@ pub struct Step {
     pub kind: StepKind,
     /// ast-grep rule object (pattern, kind, all/any/not/inside, constraints, utils...).
     pub rule: Option<serde_yaml::Value>,
+    /// ast-grep `constraints`, applied to metavariables bound by `rule`.
+    pub constraints: Option<serde_yaml::Value>,
+    /// ast-grep `utils`, reusable named sub-rules referenced with `matches:`.
+    pub utils: Option<serde_yaml::Value>,
     /// Rewrite template. Omit for a scan-only step. `$VAR`/`$$$` metavariables
     /// bound by `rule` are substituted.
     pub fix: Option<String>,

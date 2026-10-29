@@ -1,0 +1,24 @@
+id: rust.idiom.bool-return
+name: Return the condition instead of comparing it to a bool literal
+description: >-
+  `if cond { true } else { false }` is `cond`, and the inverted form is `!cond`.
+  OpenRewrite calls this SimplifyBooleanReturn; in Rust the if-expression makes the
+  simplification exact rather than a rewrite of several statements.
+tags: [idiom, static-analysis]
+risk: low
+
+steps:
+  - rule:
+      pattern: if $C { true } else { false }
+    fix: $C
+  - rule:
+      pattern: if $C { false } else { true }
+    fix: "!$C"
+
+examples:
+  - before: "fn ready(s: &State) -> bool { if s.started { true } else { false } }"
+    after: "fn ready(s: &State) -> bool { s.started }"
+    why: The condition already is the answer.
+  - before: "fn stopped(s: &State) -> bool { if s.started { false } else { true } }"
+    after: "fn stopped(s: &State) -> bool { !s.started }"
+    why: The inverted branch is the negation.

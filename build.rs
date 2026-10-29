@@ -41,5 +41,7 @@ fn main() {
 
     let dest = Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("builtin_recipes.rs");
     fs::write(&dest, code).expect("write builtin recipe table");
-    println!("cargo:rerun-if-changed=recipes");
+    // Deliberately no `rerun-if-changed`: cargo then reruns this script whenever
+    // any package file changes, which is what catches a recipe being *deleted*.
+    // Watching the recipes directory alone misses that on Windows.
 }

@@ -1,0 +1,22 @@
+id: rust.idiom.self-assignment
+name: Remove an assignment that assigns a value to itself
+description: >-
+  `x = x;` does nothing. OpenRewrite's RemoveSelfAssignment removes it, and in Rust
+  it usually survives as the scar of a deleted expression.
+tags: [idiom, static-analysis]
+risk: low
+
+steps:
+  - rule:
+      pattern: $X = $X;
+    delete: true
+
+examples:
+  - before: |-
+      fn reset(counter: &mut u32) {
+          counter = counter;
+      }
+    after: |-
+      fn reset(counter: &mut u32) {
+      }
+    why: The statement is removed, and so is the line it occupied.

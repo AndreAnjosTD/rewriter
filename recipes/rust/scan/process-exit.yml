@@ -1,0 +1,21 @@
+id: rust.scan.process-exit
+name: Find process::exit calls
+description: >-
+  A call to `process::exit` skips destructors and returns from the middle of the
+  program. OpenRewrite's static analysis pack reports the Java equivalent
+  (FindSystemAndRuntimeExitCalls); reporting keeps the judgement with the reviewer.
+tags: [scan, lifecycle]
+risk: medium
+mode: scan
+
+steps:
+  - rule:
+      any:
+        - pattern: "std::process::exit($$$ARGS)"
+        - pattern: "process::exit($$$ARGS)"
+    message: process::exit skips destructors and cleanup
+
+examples:
+  - before: process::exit(1);
+    after: process::exit(1);
+    why: Scan recipes report the call and leave the code untouched.

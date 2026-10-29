@@ -1,0 +1,20 @@
+id: rust.idiom.double-negation
+name: Remove a double negation
+description: >-
+  `!!x` is `x`. OpenRewrite's SimplifyBooleanExpression and the Go pack's
+  SimplifyDoubleNegation both catch this; Rust rarely produces it by hand, but it
+  appears after mechanical edits that invert a condition twice.
+tags: [idiom, static-analysis]
+risk: low
+
+steps:
+  - rule:
+      all:
+        - kind: unary_expression
+        - pattern: "!!$X"
+    fix: $X
+
+examples:
+  - before: "if !!ready { start(); }"
+    after: "if ready { start(); }"
+    why: Two negations cancel.

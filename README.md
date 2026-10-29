@@ -86,7 +86,19 @@ examples:
 ```
 
 The `rule` object is an [ast-grep rule](https://ast-grep.github.io/reference/rule.html), passed through verbatim: `pattern`, `kind`, `all`/`any`/`not`, `inside`, `has`, `constraints` and `utils` all work.
+`constraints` and `utils` are written as siblings of `rule`, mirroring ast-grep's own YAML.
 `fix` is a template where `$VAR` and `$$$` metavariables bound by the rule are substituted.
+
+A constraint is what keeps a broad pattern honest. This renames any numeric constant path, but only for the primitive type names, in one rule instead of eighteen:
+
+```yaml
+- rule:
+    pattern: "std::$T::MAX"
+  constraints:
+    T:
+      regex: "^(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64)$"
+  fix: "$T::MAX"
+```
 
 Step options:
 
@@ -124,19 +136,33 @@ Every recipe that rewrites something should carry at least one `example`.
 | --- | --- | --- |
 | `rust.idiom.string-len-zero` | fix | `.len() == 0` becomes `.is_empty()` |
 | `rust.idiom.bool-compare` | fix | `x == true` becomes `x` |
+| `rust.idiom.bool-return` | fix | `if x { true } else { false }` becomes `x` |
+| `rust.idiom.double-negation` | fix | `!!x` becomes `x` |
+| `rust.idiom.self-assignment` | fix | removes `x = x;` |
 | `rust.idiom.string-from-empty` | fix | `String::from("")` becomes `String::new()` |
 | `rust.idiom.iter-nth-zero` | fix | `.nth(0)` becomes `.next()` |
-| `rust.idioms` | composite | the idiom pack in one pass |
+| `rust.idiom.redundant-field-shorthand` | fix | `Point { x: x }` becomes `Point { x }` |
+| `rust.idiom.explicit-unit-return` | fix | `return ();` becomes `return;` |
+| `rust.idiom.lambda-to-fn` | fix | `|x| f(x)` becomes `f` |
+| `rust.idiom.debug-macro-removal` | fix | removes statement-position `dbg!(..)` |
+| `rust.idioms` | composite | the nine idiom fixes above, in one pass |
 | `rust.modernize.extern-crate` | fix | drops redundant `extern crate` declarations |
+| `rust.modernize.legacy-numeric-constants` | fix | `std::i32::MAX` becomes `i32::MAX` |
+| `rust.modernize` | composite | edition-2018 mechanical migration |
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |
 | `rust.cleanup` | composite | idiom pack, then compiler suggestions |
 | `rust.scan.unwrap` | scan | `unwrap()` outside `tests/` |
 | `rust.scan.mem-uninitialized` | scan | deprecated `mem::uninitialized` |
+| `rust.scan.transmute` | scan | `mem::transmute` |
+| `rust.scan.process-exit` | scan | `process::exit` |
+| `rust.scan.hardcoded-secret` | scan | a string literal bound to a secret-looking name |
 
 Read-only recipes exist on purpose: `unwrap` is correct in a main, a prototype, or a test.
 The decision belongs to the reviewer, so the tool reports it and writes nothing.
+
+[`docs/openrewrite-mapping.md`](docs/openrewrite-mapping.md) audits the full OpenRewrite catalog against Rust and records which recipes transfer, which need type information, and which were attempted and rejected.
 
 ## Known limits
 

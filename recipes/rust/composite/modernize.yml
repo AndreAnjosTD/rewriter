@@ -1,0 +1,13 @@
+id: rust.modernize
+name: Modernize a pre-2018 crate
+description: >-
+  A composite recipe: the mechanical parts of moving old Rust forward. It drops
+  `extern crate` declarations that edition 2018 made redundant and rewrites the
+  legacy numeric constant paths. Neither change alters behaviour, and the
+  compile gate proves it.
+tags: [composite, modernize]
+risk: medium
+
+recipes:
+  - rust.modernize.extern-crate
+  - rust.modernize.legacy-numeric-constants

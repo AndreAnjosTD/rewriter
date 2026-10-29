@@ -1,7 +1,7 @@
 //! Rewrite engine: turns recipe steps into ast-grep rules, applies them to
 //! source text, and runs cargo-powered fixers.
 
-use crate::recipes::{Mode, Resolved, StepKind};
+use crate::recipes::{Mode, Resolved, Step, StepKind};
 use anyhow::{bail, Context, Result};
 use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig};
 use ast_grep_core::replacer::Replacer;
@@ -107,7 +107,7 @@ impl Engine {
                             .message
                             .clone()
                             .unwrap_or_else(|| resolved_step.name.clone());
-                        let cfg = build_rule(&resolved_step.recipe, &message, rule, fix)
+                        let cfg = build_rule(&resolved_step.recipe, &message, rule, fix, step)
                             .with_context(|| {
                                 format!(
                                     "compiling step {} of `{}`",
@@ -309,6 +309,7 @@ fn build_rule(
     name: &str,
     rule: &serde_yaml::Value,
     fix: Option<&str>,
+    step: &Step,
 ) -> Result<RuleConfig<SupportLang>> {
     let mut yaml = String::new();
     yaml.push_str("id: ");
@@ -323,6 +324,15 @@ fn build_rule(
     }
     yaml.push_str("rule:\n");
     yaml.push_str(&indent(&to_yaml(rule)?, 2));
+    yaml.push('\n');
+    for (key, value) in [("constraints", &step.constraints), ("utils", &step.utils)] {
+        if let Some(value) = value {
+            yaml.push_str(key);
+            yaml.push_str(":\n");
+            yaml.push_str(&indent(&to_yaml(value)?, 2));
+            yaml.push('\n');
+        }
+    }
 
     if std::env::var_os("RUSTREWRITE_DEBUG").is_some() {
         eprintln!("--- compiled rule yaml ---\n{yaml}\n---------------------------");

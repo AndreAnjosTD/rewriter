@@ -1,0 +1,25 @@
+id: rust.idiom.lambda-to-fn
+name: Pass the function instead of a closure that only calls it
+description: >-
+  `|x| f(x)` is `f`. OpenRewrite calls this ReplaceLambdaWithMethodReference; in
+  Rust it is the difference between a closure allocation and a plain function item.
+  The constraint keeps the rule to bare function paths, because `|x| self.f(x)`
+  cannot become `self.f` without changing meaning.
+tags: [idiom, static-analysis]
+risk: low
+
+steps:
+  - rule:
+      pattern: "|$A| $F($A)"
+    constraints:
+      F:
+        regex: "^[A-Za-z_][A-Za-z0-9_:]*$"
+    fix: $F
+
+examples:
+  - before: "let doubled = items.iter().map(|v| double(v));"
+    after: "let doubled = items.iter().map(double);"
+    why: The closure adds a call frame and nothing else.
+  - before: "let texts = items.iter().map(|v| self.render(v));"
+    after: "let texts = items.iter().map(|v| self.render(v));"
+    why: A method on a value is left alone, because the receiver is not a path.

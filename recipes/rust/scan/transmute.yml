@@ -1,0 +1,24 @@
+id: rust.scan.transmute
+name: Find mem::transmute calls
+description: >-
+  `transmute` tells the compiler to reinterpret bytes without checking anything.
+  OpenRewrite keeps a security pack for constructs like this; the Rust equivalent
+  reports them and leaves the decision to a reviewer, because the correct
+  replacement depends on what the value is used for.
+tags: [scan, soundness, security]
+risk: high
+mode: scan
+
+steps:
+  - rule:
+      any:
+        - pattern: "std::mem::transmute($$$ARGS)"
+        - pattern: "std::mem::transmute::<$T, $U>($$$ARGS)"
+        - pattern: "mem::transmute($$$ARGS)"
+        - pattern: "mem::transmute::<$T, $U>($$$ARGS)"
+    message: transmute reinterprets bytes with no checks
+
+examples:
+  - before: 'let bits: u32 = unsafe { std::mem::transmute(value) };'
+    after: 'let bits: u32 = unsafe { std::mem::transmute(value) };'
+    why: Scan recipes report the call and leave the code untouched.
