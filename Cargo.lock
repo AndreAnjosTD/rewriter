@@ -585,6 +585,7 @@ dependencies = [
  "clap",
  "globset",
  "serde",
+ "serde_json",
  "serde_yaml",
  "similar",
  "walkdir",

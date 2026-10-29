@@ -48,3 +48,20 @@ pub fn unified_diff(old: &str, new: &str, name: &str) -> String {
     let diff = similar::TextDiff::from_lines(old, new);
     diff.unified_diff().header(name, name).to_string()
 }
+
+/// Canonicalize a path and drop the Windows verbatim prefix, so that a
+/// canonicalized file path and a user-supplied root compare equal and print
+/// readably. On other platforms this is just `canonicalize`.
+pub fn normalize_path(path: &Path) -> Result<PathBuf> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", path.display()))?;
+    #[cfg(windows)]
+    {
+        let text = canonical.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return Ok(PathBuf::from(rest));
+        }
+    }
+    Ok(canonical)
+}

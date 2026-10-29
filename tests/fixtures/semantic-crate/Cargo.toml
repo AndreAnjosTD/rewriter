@@ -1,0 +1,7 @@
+[package]
+name = "semantic-crate"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone: this fixture is not a member of the tool's own workspace.
+[workspace]

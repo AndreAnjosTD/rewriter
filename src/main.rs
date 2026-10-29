@@ -6,6 +6,7 @@
 
 mod engine;
 mod recipes;
+mod semantic;
 mod util;
 mod verify;
 
@@ -13,6 +14,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use engine::{apply_to_snippet, Engine, Finding};
 use recipes::{Catalog, Mode, Resolved};
+use semantic::Server;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -96,6 +98,31 @@ enum Command {
         #[arg(long)]
         test: bool,
     },
+    /// Rename one resolved symbol using rust-analyzer's type information.
+    ///
+    /// Unlike a recipe this is positional: it renames exactly the symbol at the
+    /// given location, so two methods with the same name on different types are
+    /// told apart by the compiler rather than by text.
+    Rename {
+        /// file:line:column, 1-based, column counted in characters.
+        #[arg(long)]
+        at: String,
+        /// The new name.
+        #[arg(long)]
+        to: String,
+        /// Write the rename. Without this, only report it.
+        #[arg(long)]
+        apply: bool,
+        /// Skip the compile gate after writing.
+        #[arg(long)]
+        no_verify: bool,
+        /// Allow running with uncommitted changes.
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Seconds to wait for the analyzer to load and index the workspace.
+        #[arg(long, default_value_t = 180)]
+        wait: u64,
+    },
 }
 
 fn main() {
@@ -133,6 +160,14 @@ fn run() -> Result<()> {
             diff,
         ),
         Command::Verify { test } => verify_only(&root, test),
+        Command::Rename {
+            at,
+            to,
+            apply,
+            no_verify,
+            allow_dirty,
+            wait,
+        } => rename_symbol(&root, &at, &to, apply, !no_verify, allow_dirty, wait),
     }
 }
 
@@ -442,7 +477,7 @@ fn run_recipes(
     let files = util::rust_files(root)?;
 
     if apply {
-        if let Some(false) = util::git_clean(root) {
+        if let Some(false) = util::git_clean(&root) {
             if !allow_dirty {
                 bail!(
                     "{}\n\nhas uncommitted changes. Commit or stash first, or pass --allow-dirty.\n\
@@ -454,7 +489,7 @@ fn run_recipes(
     }
 
     let snapshot = if apply {
-        Some(verify::Snapshot::take(root)?)
+        Some(verify::Snapshot::take(&root)?)
     } else {
         None
     };
@@ -572,5 +607,160 @@ fn verify_only(root: &Path, with_tests: bool) -> Result<()> {
     if !ok {
         std::process::exit(1);
     }
+    Ok(())
+}
+
+/// `file:line:column`, 1-based. Split from the right so a Windows drive letter
+/// in the path is not mistaken for a separator.
+fn parse_location(at: &str) -> Result<(PathBuf, u32, u32)> {
+    let mut parts = at.rsplitn(3, ':');
+    let column = parts.next().and_then(|value| value.parse::<u32>().ok());
+    let line = parts.next().and_then(|value| value.parse::<u32>().ok());
+    let file = parts.next();
+    match (file, line, column) {
+        (Some(file), Some(line), Some(column)) if line >= 1 && column >= 1 && !file.is_empty() => {
+            Ok((PathBuf::from(file), line, column))
+        }
+        _ => bail!("expected --at file:line:column with 1-based numbers, got `{at}`"),
+    }
+}
+
+fn rename_symbol(
+    root: &Path,
+    at: &str,
+    new_name: &str,
+    apply: bool,
+    verify_after: bool,
+    allow_dirty: bool,
+    wait_secs: u64,
+) -> Result<()> {
+    let (file, line, column) = parse_location(at)?;
+    let root = util::normalize_path(root)?;
+    let file = if file.is_absolute() {
+        file
+    } else {
+        root.join(file)
+    };
+    let path = util::normalize_path(&file)?;
+    if !path.starts_with(&root) {
+        bail!(
+            "{} is outside the workspace {}",
+            path.display(),
+            root.display()
+        );
+    }
+    let original =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+
+    if apply {
+        if let Some(false) = util::git_clean(&root) {
+            if !allow_dirty {
+                bail!(
+                    "{}\n\nhas uncommitted changes. Commit or stash first, or pass --allow-dirty.",
+                    root.display()
+                );
+            }
+        }
+    }
+    let snapshot = if apply {
+        Some(verify::Snapshot::take(&root)?)
+    } else {
+        None
+    };
+
+    let mut server = Server::start(&root)?;
+    let encoding = server.encoding();
+    let position = semantic::char_position(&original, line - 1, column - 1, encoding)
+        .with_context(|| format!("line {line} is past the end of {}", path.display()))?;
+
+    server.did_open(&path, &original)?;
+    let ready = server.wait_ready(std::time::Duration::from_secs(wait_secs));
+    if !ready {
+        eprintln!("note: no indexing progress reported; asking the analyzer directly");
+    }
+
+    let edits = server.rename(
+        &path,
+        position,
+        new_name,
+        std::time::Duration::from_secs(wait_secs),
+    )?;
+    server.shutdown();
+    drop(server);
+
+    if edits.is_empty() {
+        bail!(
+            "rust-analyzer declined to rename the symbol at {at}.\n\
+             A trait implementation member cannot be renamed, and generated code is \
+             often off limits too. Nothing was written."
+        );
+    }
+
+    let mut total = 0usize;
+    let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
+    for file_edits in &edits {
+        let text = std::fs::read_to_string(&file_edits.path)
+            .with_context(|| format!("reading {}", file_edits.path.display()))?;
+        let updated = semantic::apply_edits(&text, &file_edits.edits, encoding)?;
+        total += file_edits.edits.len();
+        if updated != text {
+            writes.push((file_edits.path.clone(), text, updated));
+        }
+    }
+
+    for (path, old, new) in &writes {
+        print!(
+            "{}",
+            util::unified_diff(old, new, &path.display().to_string())
+        );
+    }
+
+    if !apply {
+        println!();
+        println!(
+            "dry run: {total} edit(s) across {} file(s); re-run with --apply to write",
+            writes.len()
+        );
+        return Ok(());
+    }
+
+    for (path, _, new) in &writes {
+        std::fs::write(path, new).with_context(|| format!("writing {}", path.display()))?;
+    }
+    println!();
+    println!(
+        "renamed to `{new_name}`: {total} edit(s) across {} file(s)",
+        writes.len()
+    );
+
+    if verify_after {
+        println!("running the correctness gate...");
+        let gates = verify::run(&root, false)?;
+        let mut failed = Vec::new();
+        for gate in &gates {
+            println!(
+                "  {:<8} {}",
+                gate.name,
+                if gate.ok { "ok" } else { "FAILED" }
+            );
+            if !gate.ok {
+                failed.push(gate);
+            }
+        }
+        if !failed.is_empty() {
+            if let Some(snapshot) = &snapshot {
+                snapshot.restore()?;
+                println!("rolled back the rename.");
+            }
+            for gate in failed {
+                eprintln!();
+                eprintln!("--- {} output ---", gate.name);
+                eprintln!("{}", gate.detail);
+            }
+            bail!("the rename did not compile, so it was rolled back.");
+        }
+        println!("correctness gate passed.");
+    }
+
     Ok(())
 }

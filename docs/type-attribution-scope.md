@@ -1,6 +1,6 @@
 # Scope: a type-attribution layer for rustrewrite
 
-Status: scoping complete, no implementation started.
+Status: phase 1 implemented; phases 2-5 not started.
 
 The question this answers: what would it take to make `rustrewrite` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
 
@@ -96,13 +96,34 @@ Non-negotiable details:
 | Phase | Work | Exit criterion | Estimate |
 | --- | --- | --- | --- |
 | 0 | This spike | Done — evidence above | 0.5 d |
-| 1 | LSP client in Rust: JSON-RPC framing, `initialize`, `didOpen`, `rename`, `WorkspaceEdit` application, server shutdown | A `rename` action changes exactly the right sites on the fixture crate and on NodeHugDesktop, driven from a test | 3–5 d |
+| 1 | LSP client in Rust: JSON-RPC framing, `initialize`, `didOpen`, `rename`, `WorkspaceEdit` application, server shutdown | **Done** — see results below | 3–5 d |
 | 2 | `kind: semantic` step, `--diff`/`--check` support, two flagship recipes (`rust.migrate.change-method-name`, `rust.migrate.change-type`) | `check` reports semantic findings without writing; `run --apply` goes through the gate | 2–3 d |
 | 3 | References-driven call-site rewriting for the argument primitives | `DeleteMethodArgument` equivalent works on a multi-site fixture | 4–6 d |
 | 4 | Assists as recipe sources: enumerate `codeAction` results and expose them by id | One assist runs end-to-end through the recipe model | 3–5 d |
 | 5 | Performance and lifecycle: cache the loaded workspace, `prefill_caches`, skip the server when no semantic step is present | Cold run on NodeHugDesktop under 90 s, warm semantic run under 10 s | 2–3 d |
 
 **MVP is phases 1 and 2: about one week of focused work**, and it delivers the two primitives that carry most of OpenRewrite's value.
+
+## Phase 1 results
+
+Implemented in `src/semantic.rs` and exposed as `rustrewrite rename`. Four integration tests cover it; the whole suite runs in about 15 s.
+
+Exit criterion, measured on 2026-10-29:
+
+| Check | Result |
+| --- | --- |
+| `Bag::len` renamed with `Vec::len` in the same file | 2 edits: declaration and its one call. `Vec::len` untouched. |
+| Method with three call sites | 4 edits: declaration and all three calls. Unrelated sibling method untouched. |
+| Trait implementation member | See below — refused or rolled back, never left broken. |
+| NodeHugDesktop, test helper `fn graph` | 9 edits across 1 file in 33 s, dry run, nothing written. |
+
+Five things the spike did not predict:
+
+1. **Progress notifications are opt-in.** Without `window.workDoneProgress: true` in the client capabilities, rust-analyzer sends no `$/progress` at all and the readiness wait burns its entire budget. This cost 12 minutes of test time before it was noticed.
+2. **A `null` response is not a refusal.** It means "not answerable yet". Conflating the two made every cold workspace look like a server that refuses everything, so `rename` now retries `null` until a deadline and treats only a non-null empty edit set as a refusal.
+3. **The server will rename a trait implementation member** rather than refusing it, producing code that no longer implements the trait. The compile gate caught this and rolled it back, which means the gate is load-bearing for semantic edits too, not just structural ones.
+4. **`rustup` proxies `rust-analyzer` and honours the project's toolchain pin.** A project pinned to a toolchain without the component fails at `initialize` with "Unknown binary". The error now names the fix.
+5. **Windows returns verbatim paths** (`\\?\C:\...`) from `canonicalize`, which broke a workspace-containment check until both sides were normalized.
 
 ## Risks
 

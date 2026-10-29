@@ -45,9 +45,29 @@ That trade is why the gate is mandatory rather than optional.
 | `test` | Run every recipe example. Use this before trusting a new recipe. |
 | `check [--recipe R] [--diff] [--json]` | Report findings. Exits 1 if there are any, so CI can hold the line. Never writes. |
 | `run [--recipe R] [--apply] [--test] [--diff]` | Apply a recipe, then gate it. Without `--apply` it is a dry run. |
+| `rename --at file:line:col --to NAME [--apply]` | Rename one resolved symbol using rust-analyzer's type information. |
 | `verify [--test]` | The gate on its own: format, compile, optionally test. |
 
 `--recipe` accepts an id, a namespace prefix (`rust.idiom` selects the whole pack), or `all`.
+
+## Type-aware renames
+
+Recipes match syntax, and syntax cannot tell a `Vec::len` from a `MyBag::len`. When the change has to hit exactly one of them, ask the compiler-backed server instead:
+
+```
+rustrewrite rename --at src/server.rs:42:8 --to spawn          # report
+rustrewrite rename --at src/server.rs:42:8 --to spawn --apply  # rename, then gate it
+```
+
+It starts `rust-analyzer`, waits for the workspace to load, and asks for a rename at that position. The server returns the edits, this tool applies them, and the compile gate still decides whether they stay. A dry run shows the diff and writes nothing.
+
+What it buys you, demonstrated in `tests/semantic.rs`: with `Vec::len` and a custom `Bag::len` in the same file, renaming `Bag::len` touches the declaration and its one call and leaves `Vec::len` untouched.
+
+Requirements and cost:
+
+- `rust-analyzer` on `PATH`. Install with `rustup component add rust-analyzer` — and for a project that pins a toolchain in `rust-toolchain.toml`, add it for that toolchain too.
+- The first request pays for loading the workspace: about 5 s on a small crate, about 30 s on a 40k-line workspace. `--wait` sets the budget (default 180 s).
+- The server may refuse a rename. A trait implementation member cannot be renamed, because the trait requires the name. That is reported as a refusal and nothing is written.
 
 ## What the gate does
 
@@ -168,7 +188,8 @@ The decision belongs to the reviewer, so the tool reports it and writes nothing.
 
 ## Known limits
 
-- **Type position is not matchable with `pattern`.** `&Vec<$T>` does not parse as an expression, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Recipes that rename a type need the cargo-backed path or a contribution to the engine.
+- **Structural recipes are syntax-only.** A `pattern` in type position does not parse, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Use `rename` when a change must be type-exact.
+- **`rename` is positional, not a recipe.** It renames one symbol at one location. Recipes that drive it are the next phase; see [`docs/type-attribution-scope.md`](docs/type-attribution-scope.md).
 - **No type information.** Nothing that needs to know whether an identifier is a trait, a module or a struct can be decided structurally. Those recipes belong in `mode: scan`.
 - **The gate needs the crate to compile before you start.** A pre-broken tree fails at the gate and rolls back, which is correct but unsurprising.
 - **`cargo fmt` rewrites formatting after a fix.** Replacements are syntactically correct but not always layout-correct; the formatter is the last mile.
