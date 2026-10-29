@@ -367,7 +367,8 @@ The `header` option replaces the default SPDX line: `--set 'header=// Copyright 
 A file that already contains the header text is left alone, so a second run reports nothing.
 
 `rust.migrate.add-import` writes `use <path>;` after the last existing `use` declaration, or above the first item when a file has none.
-It does not duplicate an import already present in any form: the duplicate check compares the last segment of `path` against every identifier inside the file's `use` declarations, so `use std::collections::BTreeMap;`, `use std::collections::{BTreeMap, HashMap};` and an aliased import all count.
+It does not duplicate an import already present in any form: the duplicate check compares the last segment of `path` against every identifier the file's `use` declarations bind, so `use std::collections::BTreeMap;` and `use std::collections::{BTreeMap, HashMap};` both count.
+An alias counts by the name it binds, so `use a::Bar as Baz` covers `Baz` and not `Bar`.
 A glob import does not count, because it does not name the item.
 
 Each changed file produces one finding. Since an insertion replaces nothing, that finding's `before` is empty and its `after` is the inserted text.

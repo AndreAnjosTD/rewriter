@@ -3,12 +3,12 @@ name: Add a missing use declaration
 description: >-
   Writes `use <path>;` after the last existing `use` declaration, or above the
   first item when a file has none. A file is left alone when the exact line is
-  already present, and also when any existing `use` declaration already brings
-  the imported name into scope. That second check compares the last segment of
-  `path` against every identifier inside the file's `use` declarations, so a
-  plain import, a braced group such as
-  `use std::collections::{BTreeMap, HashMap};`, an aliased import, and a
-  multi-item import all count as already present. A glob import is not treated
+  already present, and also when any existing `use` declaration already binds
+  the imported name. That second check compares the last segment of `path`
+  against every name the file's `use` declarations bring into scope, so a plain
+  import, a braced group such as `use std::collections::{BTreeMap, HashMap};`,
+  and a multi-item import all count. An alias binds its own name, so
+  `use a::Bar as Baz` covers `Baz` and not `Bar`. A glob import is not treated
   as covering the name.
 tags: [migrate]
 risk: low
