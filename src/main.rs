@@ -477,7 +477,7 @@ fn run_recipes(
     let files = util::rust_files(root)?;
 
     if apply {
-        if let Some(false) = util::git_clean(&root) {
+        if let Some(false) = util::git_clean(root) {
             if !allow_dirty {
                 bail!(
                     "{}\n\nhas uncommitted changes. Commit or stash first, or pass --allow-dirty.\n\
@@ -489,7 +489,7 @@ fn run_recipes(
     }
 
     let snapshot = if apply {
-        Some(verify::Snapshot::take(&root)?)
+        Some(verify::Snapshot::take(root)?)
     } else {
         None
     };

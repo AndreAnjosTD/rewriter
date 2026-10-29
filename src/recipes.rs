@@ -246,9 +246,8 @@ impl Catalog {
             if matches.is_empty() {
                 let known: Vec<&String> = self.recipes.keys().collect();
                 bail!(
-                    "unknown recipe `{}`{}\n\navailable:\n  {}",
+                    "unknown recipe `{}`\n\navailable:\n  {}",
                     selector,
-                    if selector.contains('.') { "" } else { "" },
                     known
                         .iter()
                         .map(|s| s.as_str())
