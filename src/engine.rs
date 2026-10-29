@@ -1,7 +1,7 @@
 //! Rewrite engine: turns recipe steps into ast-grep rules, applies them to
 //! source text, and runs cargo-powered fixers.
 
-use crate::recipes::{Mode, Resolved, Step, StepKind};
+use crate::recipes::{Mode, Resolved, SemanticAction, Step, StepKind};
 use anyhow::{bail, Context, Result};
 use ast_grep_config::{from_yaml_string, GlobalRules, RuleConfig};
 use ast_grep_core::replacer::Replacer;
@@ -87,12 +87,26 @@ impl Compiled {
 pub struct Engine {
     compiled: Vec<Compiled>,
     cargo_steps: Vec<(String, Vec<String>)>,
+    semantic_steps: Vec<SemanticStep>,
+}
+
+/// A rename that has to be resolved by the compiler, not matched by text.
+#[derive(Debug, Clone)]
+pub struct SemanticStep {
+    pub recipe: String,
+    pub action: SemanticAction,
+    pub file: PathBuf,
+    pub anchor: Option<String>,
+    pub line: Option<u32>,
+    pub from: String,
+    pub to: String,
 }
 
 impl Engine {
     pub fn compile(resolved: &[Resolved]) -> Result<Self> {
         let mut compiled = Vec::new();
         let mut cargo_steps = Vec::new();
+        let mut semantic_steps = Vec::new();
         for r in resolved {
             for (index, resolved_step) in r.steps.iter().enumerate() {
                 let step = &resolved_step.step;
@@ -128,13 +142,34 @@ impl Engine {
                         let command = step.command.clone().expect("validated at load time");
                         cargo_steps.push((resolved_step.recipe.clone(), command));
                     }
+                    StepKind::Semantic => {
+                        semantic_steps.push(SemanticStep {
+                            recipe: resolved_step.recipe.clone(),
+                            action: step.action.unwrap_or_default(),
+                            file: PathBuf::from(step.file.clone().unwrap_or_default()),
+                            anchor: step.anchor.clone(),
+                            line: step.line,
+                            from: step.from.clone().unwrap_or_default(),
+                            to: step.to.clone().unwrap_or_default(),
+                        });
+                    }
                 }
             }
         }
         Ok(Self {
             compiled,
             cargo_steps,
+            semantic_steps,
         })
+    }
+
+    /// Whether this engine carries steps that need a language server.
+    pub fn has_semantic_steps(&self) -> bool {
+        !self.semantic_steps.is_empty()
+    }
+
+    pub fn semantic_steps(&self) -> &[SemanticStep] {
+        &self.semantic_steps
     }
 
     /// Rewrite `text` to a fixpoint.

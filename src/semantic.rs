@@ -347,6 +347,18 @@ impl Server {
         }))
     }
 
+    /// Replace the server's copy of an open document after this tool wrote new
+    /// text to disk, so the next semantic step resolves against reality.
+    pub fn refresh(&mut self, path: &Path, text: &str) -> Result<()> {
+        let uri = path_to_uri(path);
+        self.write(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didClose",
+            "params": { "textDocument": { "uri": uri } }
+        }))?;
+        self.did_open(path, text)
+    }
+
     /// Rename the symbol at `position`, returning the edits the server wants.
     ///
     /// A `null` response means "not answerable yet", so it is retried until the

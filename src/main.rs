@@ -12,9 +12,10 @@ mod verify;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use engine::{apply_to_snippet, Engine, Finding};
-use recipes::{Catalog, Mode, Resolved};
+use engine::{apply_to_snippet, Engine, Finding, SemanticStep};
+use recipes::{Catalog, Mode, Resolved, SemanticAction};
 use semantic::Server;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -70,6 +71,12 @@ enum Command {
         /// Machine-readable output.
         #[arg(long)]
         json: bool,
+        /// Recipe option, e.g. --set file=src/main.rs. Repeatable.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        /// Seconds to wait for the analyzer to index, for semantic recipes.
+        #[arg(long, default_value_t = 180)]
+        wait: u64,
     },
     /// Apply a recipe.
     Run {
@@ -91,6 +98,12 @@ enum Command {
         /// Print a unified diff.
         #[arg(long)]
         diff: bool,
+        /// Recipe option, e.g. --set file=src/main.rs. Repeatable.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        options: Vec<String>,
+        /// Seconds to wait for the analyzer to index, for semantic recipes.
+        #[arg(long, default_value_t = 180)]
+        wait: u64,
     },
     /// Run the compile (and optionally test) gate alone.
     Verify {
@@ -141,7 +154,13 @@ fn run() -> Result<()> {
         Command::List { tag, sources } => list(&catalog, tag.as_deref(), sources),
         Command::Explain { recipe } => explain(&catalog, &recipe),
         Command::Test { recipe } => test_examples(&catalog, recipe.as_deref()),
-        Command::Check { recipe, diff, json } => check(&catalog, &root, &recipe, diff, json),
+        Command::Check {
+            recipe,
+            diff,
+            json,
+            options,
+            wait,
+        } => check(&catalog, &root, &recipe, diff, json, &options, wait),
         Command::Run {
             recipe,
             apply,
@@ -149,6 +168,8 @@ fn run() -> Result<()> {
             test,
             allow_dirty,
             diff,
+            options,
+            wait,
         } => run_recipes(
             &catalog,
             &root,
@@ -158,6 +179,8 @@ fn run() -> Result<()> {
             test,
             allow_dirty,
             diff,
+            &options,
+            wait,
         ),
         Command::Verify { test } => verify_only(&root, test),
         Command::Rename {
@@ -205,6 +228,24 @@ fn list(catalog: &Catalog, tag: Option<&str>, sources: bool) -> Result<()> {
         } else {
             format!("  [{}]", recipe.tags.join(", "))
         };
+        let needs: Vec<&String> = recipe
+            .options
+            .iter()
+            .filter(|(_, spec)| spec.required)
+            .map(|(name, _)| name)
+            .collect();
+        let needs = if needs.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  needs --set {}",
+                needs
+                    .iter()
+                    .map(|name| format!("{name}=.."))
+                    .collect::<Vec<_>>()
+                    .join(" --set ")
+            )
+        };
         let source = if sources {
             format!("  ({})", recipe.source)
         } else {
@@ -219,7 +260,7 @@ fn list(catalog: &Catalog, tag: Option<&str>, sources: bool) -> Result<()> {
             source
         );
         if !recipe.name.is_empty() {
-            println!("    {}", recipe.name);
+            println!("    {}{}", recipe.name, needs);
         }
     }
     if !any {
@@ -246,6 +287,18 @@ fn explain(catalog: &Catalog, selector: &str) -> Result<()> {
     if !recipe.description.is_empty() {
         println!();
         println!("{}", recipe.description);
+    }
+    if !recipe.options.is_empty() {
+        println!();
+        println!("options:");
+        for (name, spec) in &recipe.options {
+            let required = if spec.required {
+                "required"
+            } else {
+                "optional"
+            };
+            println!("  --set {name}=..   ({required}) {}", spec.description);
+        }
     }
     if !recipe.recipes.is_empty() {
         println!();
@@ -281,9 +334,20 @@ fn explain(catalog: &Catalog, selector: &str) -> Result<()> {
                 println!("    got:    {}", got.replace('\n', "\n            "));
             }
         }
-    } else {
+    } else if recipe
+        .steps
+        .iter()
+        .any(|step| step.kind == recipes::StepKind::Structural)
+    {
         println!();
         println!("(no examples declared, so this recipe is unproven)");
+    } else if recipe
+        .steps
+        .iter()
+        .any(|step| step.kind == recipes::StepKind::Semantic)
+    {
+        println!();
+        println!("(semantic recipe: proven by integration tests, not by snippet examples)");
     }
     Ok(())
 }
@@ -339,8 +403,10 @@ fn check(
     selector: &str,
     show_diff: bool,
     json: bool,
+    options: &[String],
+    wait_secs: u64,
 ) -> Result<()> {
-    let resolved = resolve_selector(catalog, selector)?;
+    let resolved = resolve_selector(catalog, selector, options)?;
     let engine = Engine::compile(&resolved)?;
     let files = util::rust_files(root)?;
 
@@ -357,6 +423,13 @@ fn check(
             changed_files += 1;
             pending.push((path.clone(), text, next));
         }
+    }
+
+    if engine.has_semantic_steps() {
+        let outcome = run_semantic(root, engine.semantic_steps(), false, wait_secs)?;
+        findings.extend(outcome.findings);
+        changed_files += outcome.writes.len();
+        pending.extend(outcome.writes);
     }
 
     if json {
@@ -389,7 +462,11 @@ fn check(
                 distinct_files(&findings),
                 changed_files
             );
-            println!("run with --apply to write (rustrewrite run --recipe {selector} --apply)");
+            let supplied = options
+                .iter()
+                .map(|option| format!(" --set {option}"))
+                .collect::<String>();
+            println!("write them with: rustrewrite run --recipe {selector} --apply{supplied}");
         }
     }
 
@@ -449,16 +526,160 @@ fn distinct_files(findings: &[Finding]) -> usize {
     set.len()
 }
 
-fn resolve_selector(catalog: &Catalog, selector: &str) -> Result<Vec<Resolved>> {
+fn resolve_selector(
+    catalog: &Catalog,
+    selector: &str,
+    options: &[String],
+) -> Result<Vec<Resolved>> {
+    let provided = parse_options(options)?;
     let selected = catalog.select(selector)?;
     let mut resolved = Vec::new();
     for recipe in selected {
-        resolved.push(catalog.resolve(recipe)?);
+        let mut one = catalog.resolve(recipe)?;
+        recipes::apply_options(&mut one, &provided)?;
+        resolved.push(one);
     }
     if resolved.is_empty() {
         bail!("`{selector}` matched no recipes");
     }
     Ok(resolved)
+}
+
+fn parse_options(raw: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut options = BTreeMap::new();
+    for item in raw {
+        let (key, value) = item
+            .split_once('=')
+            .with_context(|| format!("expected `--set key=value`, got `{item}`"))?;
+        options.insert(key.trim().to_string(), value.to_string());
+    }
+    Ok(options)
+}
+
+struct SemanticOutcome {
+    findings: Vec<Finding>,
+    writes: Vec<(PathBuf, String, String)>,
+}
+
+/// Run semantic steps against one language server, applying edits only when
+/// asked. Edits are always reported, so `check` can show what would change.
+fn run_semantic(
+    root: &Path,
+    steps: &[SemanticStep],
+    write: bool,
+    wait_secs: u64,
+) -> Result<SemanticOutcome> {
+    let mut outcome = SemanticOutcome {
+        findings: Vec::new(),
+        writes: Vec::new(),
+    };
+    if steps.is_empty() {
+        return Ok(outcome);
+    }
+
+    let mut server = Server::start(root)?;
+    let encoding = server.encoding();
+    let budget = std::time::Duration::from_secs(wait_secs);
+    let mut opened: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut ready = false;
+
+    for step in steps {
+        let path = util::normalize_path(&root.join(&step.file))?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let (line, character) = locate_symbol(&text, step, &path)?;
+        let position = semantic::char_position(&text, line, character, encoding)
+            .with_context(|| format!("locating `{}` in {}", step.from, path.display()))?;
+
+        if opened.contains(&path) {
+            server.refresh(&path, &text)?;
+        } else {
+            server.did_open(&path, &text)?;
+            opened.insert(path.clone());
+        }
+        if !ready {
+            ready = server.wait_ready(budget);
+        }
+
+        let edits = match step.action {
+            SemanticAction::Rename => server.rename(&path, position, &step.to, budget)?,
+        };
+        if edits.is_empty() {
+            bail!(
+                "`{}` declined to rename `{}` in {}.\n\
+                 A trait implementation member cannot be renamed. Nothing was written.",
+                step.recipe,
+                step.from,
+                step.file.display()
+            );
+        }
+
+        for file_edits in &edits {
+            let current = std::fs::read_to_string(&file_edits.path)
+                .with_context(|| format!("reading {}", file_edits.path.display()))?;
+            let updated = semantic::apply_edits(&current, &file_edits.edits, encoding)?;
+            for edit in &file_edits.edits {
+                outcome.findings.push(Finding {
+                    recipe: step.recipe.clone(),
+                    path: file_edits.path.clone(),
+                    line: edit.range.start.line as usize + 1,
+                    column: edit.range.start.character as usize + 1,
+                    before: step.from.clone(),
+                    after: Some(edit.new_text.clone()),
+                    message: String::new(),
+                });
+            }
+            if write {
+                std::fs::write(&file_edits.path, &updated)
+                    .with_context(|| format!("writing {}", file_edits.path.display()))?;
+                server.refresh(&file_edits.path, &updated)?;
+                opened.insert(file_edits.path.clone());
+            }
+            outcome
+                .writes
+                .push((file_edits.path.clone(), current, updated));
+        }
+    }
+
+    server.shutdown();
+    Ok(outcome)
+}
+
+/// Find the identifier to rename, by anchor text or by line number.
+fn locate_symbol(text: &str, step: &SemanticStep, path: &Path) -> Result<(u32, u32)> {
+    let (line_index, line) = if let Some(anchor) = &step.anchor {
+        let index = text
+            .lines()
+            .position(|candidate| candidate.contains(anchor))
+            .with_context(|| {
+                format!(
+                    "no line in {} contains the anchor `{anchor}`",
+                    path.display()
+                )
+            })?;
+        (index, text.lines().nth(index).unwrap_or_default())
+    } else if let Some(number) = step.line {
+        let index = number.saturating_sub(1) as usize;
+        let line = text
+            .lines()
+            .nth(index)
+            .with_context(|| format!("line {number} is past the end of {}", path.display()))?;
+        (index, line)
+    } else {
+        bail!(
+            "semantic step for `{}` has neither `anchor` nor `line`",
+            path.display()
+        );
+    };
+
+    let byte = line.find(&step.from).with_context(|| {
+        format!(
+            "`{}` is not on the located line of {}",
+            step.from,
+            path.display()
+        )
+    })?;
+    Ok((line_index as u32, line[..byte].chars().count() as u32))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -471,8 +692,10 @@ fn run_recipes(
     with_tests: bool,
     allow_dirty: bool,
     show_diff: bool,
+    options: &[String],
+    wait_secs: u64,
 ) -> Result<()> {
-    let resolved = resolve_selector(catalog, selector)?;
+    let resolved = resolve_selector(catalog, selector, options)?;
     let engine = Engine::compile(&resolved)?;
     let files = util::rust_files(root)?;
 
@@ -510,6 +733,14 @@ fn run_recipes(
         std::fs::write(path, new).with_context(|| format!("writing {}", path.display()))?;
     }
 
+    // Semantic steps run after structural edits are on disk, because the
+    // language server resolves positions against files, not against our buffers.
+    if engine.has_semantic_steps() {
+        let outcome = run_semantic(root, engine.semantic_steps(), apply, wait_secs)?;
+        findings.extend(outcome.findings);
+        writes.extend(outcome.writes);
+    }
+
     if show_diff || !apply {
         for (path, old, new) in &writes {
             print!(
@@ -542,10 +773,9 @@ fn run_recipes(
         println!("re-run with --apply to write, then the compile gate decides.");
         return Ok(());
     }
-
     println!();
     if writes.is_empty() {
-        println!("no structural changes; cargo steps ran for {selector}");
+        println!("no changes to write for {selector}");
     } else {
         println!(
             "applied {} change(s) across {} file(s) for {selector}",

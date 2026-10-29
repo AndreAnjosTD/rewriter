@@ -1,0 +1,33 @@
+id: rust.migrate.change-type
+name: Change a type name
+description: >-
+  Renames one struct, enum, trait, union or type alias, and every reference to it,
+  resolved by rust-analyzer. This is the Rust form of OpenRewrite's ChangeType,
+  which is the recipe the whole catalog is built around. The identifier being
+  renamed must be the declaration itself; a use of the type is not a rename site.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the type, relative to the run root.
+    required: true
+  anchor:
+    description: >-
+      Text on the declaration line, used to find it. For example `struct Bag` or
+      `enum Kind`.
+    required: true
+  from:
+    description: The current type name.
+    required: true
+  to:
+    description: The new type name.
+    required: true
+
+steps:
+  - kind: semantic
+    action: rename
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    to: ${to}

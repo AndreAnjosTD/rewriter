@@ -248,3 +248,170 @@ fn dry_run_reports_without_writing() {
     );
     assert_eq!(read(&dir), before, "a dry run must not modify the source");
 }
+
+#[test]
+fn semantic_recipe_needs_its_options() {
+    let dir = fixture("needs");
+    let output = run(
+        &["check", "--recipe", "rust.migrate.change-method-name"],
+        &dir,
+    );
+    assert!(
+        !output.status.success(),
+        "a recipe with required options must refuse to run without them"
+    );
+    let text = stderr(&output);
+    assert!(
+        text.contains("--set file"),
+        "the refusal must name the missing option:\n{text}"
+    );
+}
+
+#[test]
+fn change_method_name_recipe_reports_without_writing() {
+    if !available() {
+        eprintln!("SKIPPED: rust-analyzer is not installed");
+        return;
+    }
+    let _guard = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = fixture("recipe-check");
+    let before = read(&dir);
+
+    let output = run(
+        &[
+            "check",
+            "--recipe",
+            "rust.migrate.change-method-name",
+            "--set",
+            "file=src/main.rs",
+            "--set",
+            "anchor=fn len(&self) -> usize",
+            "--set",
+            "from=len",
+            "--set",
+            "to=size",
+        ],
+        &dir,
+    );
+    let report = stdout(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "check exits 1 when it finds something:\n{report}\n{}",
+        stderr(&output)
+    );
+    assert!(
+        report.contains("rust.migrate.change-method-name"),
+        "expected the recipe in the report:\n{report}"
+    );
+    assert!(
+        report.contains("2 finding(s)"),
+        "expected the declaration and its one call:\n{report}"
+    );
+    assert_eq!(read(&dir), before, "check must not write");
+}
+
+#[test]
+fn change_method_name_recipe_applies_and_gates() {
+    if !available() {
+        eprintln!("SKIPPED: rust-analyzer is not installed");
+        return;
+    }
+    let _guard = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = fixture("recipe-apply");
+
+    let output = run(
+        &[
+            "run",
+            "--recipe",
+            "rust.migrate.change-method-name",
+            "--set",
+            "file=src/main.rs",
+            "--set",
+            "anchor=fn len(&self) -> usize",
+            "--set",
+            "from=len",
+            "--set",
+            "to=size",
+            "--apply",
+        ],
+        &dir,
+    );
+
+    assert!(
+        output.status.success(),
+        "run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let after = read(&dir);
+    assert!(after.contains("fn size(&self) -> usize"), "{after}");
+    assert!(after.contains("bag.size()"), "{after}");
+    assert!(
+        after.contains("numbers.len()"),
+        "Vec::len must survive the recipe:\n{after}"
+    );
+    assert!(
+        stdout(&output).contains("correctness gate passed"),
+        "the gate must run:\n{}",
+        stdout(&output)
+    );
+    assert!(compiles(&dir));
+}
+
+#[test]
+fn change_type_recipe_renames_every_reference() {
+    if !available() {
+        eprintln!("SKIPPED: rust-analyzer is not installed");
+        return;
+    }
+    let _guard = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = fixture("recipe-type");
+
+    let output = run(
+        &[
+            "run",
+            "--recipe",
+            "rust.migrate.change-type",
+            "--set",
+            "file=src/main.rs",
+            "--set",
+            "anchor=struct Bag",
+            "--set",
+            "from=Bag",
+            "--set",
+            "to=Sack",
+            "--apply",
+        ],
+        &dir,
+    );
+
+    assert!(
+        output.status.success(),
+        "run failed:\n{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let after = read(&dir);
+    assert!(
+        after.contains("struct Sack;"),
+        "declaration not renamed:\n{after}"
+    );
+    assert!(
+        after.contains("impl Sack {"),
+        "impl block not renamed:\n{after}"
+    );
+    assert!(
+        after.contains("let bag = Sack;"),
+        "use site not renamed:\n{after}"
+    );
+    assert!(!after.contains("Bag"), "a reference was missed:\n{after}");
+    assert!(compiles(&dir));
+}

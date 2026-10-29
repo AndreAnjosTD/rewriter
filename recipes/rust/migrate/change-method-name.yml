@@ -1,0 +1,33 @@
+id: rust.migrate.change-method-name
+name: Change a method name
+description: >-
+  Renames one method and every true call to it, resolved by rust-analyzer rather
+  than matched by text. Two methods with the same name on different types are told
+  apart by the compiler, which is what makes this safe compared with a pattern.
+  This is the Rust form of OpenRewrite's ChangeMethodName.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the method, relative to the run root.
+    required: true
+  anchor:
+    description: >-
+      Text on the declaration line, used to find it. For example `fn start(&self)`.
+      An anchor survives edits above it; a line number does not.
+    required: true
+  from:
+    description: The current method name.
+    required: true
+  to:
+    description: The new method name.
+    required: true
+
+steps:
+  - kind: semantic
+    action: rename
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    to: ${to}

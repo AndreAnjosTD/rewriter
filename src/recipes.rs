@@ -6,7 +6,7 @@
 //! recipes; composites flatten to their steps in declaration order.
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -41,7 +41,7 @@ impl std::fmt::Display for Risk {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum StepKind {
     /// An ast-grep structural rule, optionally with a rewrite template.
@@ -49,9 +49,28 @@ pub enum StepKind {
     Structural,
     /// A cargo-powered fixer (compiler or clippy machine-applicable fixes).
     Cargo,
+    /// A rename resolved by rust-analyzer, so two same-named methods on
+    /// different types are told apart by the compiler rather than by text.
+    Semantic,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SemanticAction {
+    #[default]
+    Rename,
+}
+
+/// A recipe parameter, the equivalent of OpenRewrite's `@Option`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptionSpec {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Step {
     #[serde(default)]
     pub kind: StepKind,
@@ -77,6 +96,19 @@ pub struct Step {
     pub exclude: Vec<String>,
     /// Command for a cargo step, e.g. ["cargo", "fix", "--all-targets"].
     pub command: Option<Vec<String>>,
+    /// Semantic action; defaults to `rename`.
+    pub action: Option<SemanticAction>,
+    /// File the symbol lives in, relative to the run root.
+    pub file: Option<String>,
+    /// Text on the declaration line, used to locate it without pinning a line
+    /// number that any edit above would invalidate.
+    pub anchor: Option<String>,
+    /// 1-based line number, as an alternative to `anchor`.
+    pub line: Option<u32>,
+    /// The identifier to rename on that line.
+    pub from: Option<String>,
+    /// The new name.
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +134,9 @@ pub struct Recipe {
     /// Composite: ids of recipes to run, in order.
     #[serde(default)]
     pub recipes: Vec<String>,
+    /// Parameters, the equivalent of OpenRewrite's `@Option` fields.
+    #[serde(default)]
+    pub options: BTreeMap<String, OptionSpec>,
     #[serde(default)]
     pub steps: Vec<Step>,
     #[serde(default)]
@@ -212,8 +247,32 @@ impl Catalog {
                 StepKind::Cargo if step.command.is_none() => {
                     bail!("recipe `{}` has a cargo step with no `command`", recipe.id)
                 }
+                StepKind::Semantic => {
+                    if step.file.is_none() || step.from.is_none() || step.to.is_none() {
+                        bail!(
+                            "recipe `{}` has a semantic step without `file`, `from` and `to`",
+                            recipe.id
+                        );
+                    }
+                    if step.anchor.is_none() && step.line.is_none() {
+                        bail!(
+                            "recipe `{}` has a semantic step with neither `anchor` nor `line`",
+                            recipe.id
+                        );
+                    }
+                }
                 _ => {}
             }
+        }
+        // A recipe that both edits text and renames a symbol would ask the
+        // server to resolve positions against a file the structural steps have
+        // already moved. Keep the two apart instead of guessing.
+        let kinds: Vec<StepKind> = recipe.steps.iter().map(|step| step.kind).collect();
+        if kinds.contains(&StepKind::Structural) && kinds.contains(&StepKind::Semantic) {
+            bail!(
+                "recipe `{}` mixes structural and semantic steps; split it into two recipes",
+                recipe.id
+            );
         }
         self.recipes.insert(recipe.id.clone(), recipe);
         Ok(())
@@ -234,6 +293,9 @@ impl Catalog {
                 .recipes
                 .values()
                 .filter(|r| r.mode == Mode::Fix && r.recipes.is_empty())
+                // A recipe that needs parameters cannot run from a bare `all`;
+                // it has to be named, with its options supplied.
+                .filter(|r| !r.options.values().any(|option| option.required))
                 .collect());
         }
         // Prefix support: `rust.idiom` selects every recipe under that namespace.
@@ -326,4 +388,124 @@ fn parse_recipe(text: &str, source: &str) -> Result<Recipe> {
         serde_yaml::from_str(text).with_context(|| format!("parsing YAML from {source}"))?;
     recipe.source = source.to_string();
     Ok(recipe)
+}
+
+/// Fill a recipe's parameters, substituting `${name}` in every string it holds.
+///
+/// This is the Rust equivalent of OpenRewrite injecting `@Option` fields, and it
+/// is what turns `ChangeType` from a hard-coded migration into a reusable
+/// primitive.
+pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String>) -> Result<()> {
+    let declared = &resolved.recipe.options;
+    for key in provided.keys() {
+        if !declared.contains_key(key) {
+            let known = if declared.is_empty() {
+                "  (none)".to_string()
+            } else {
+                declared
+                    .keys()
+                    .map(|name| format!("  {name}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            bail!(
+                "recipe `{}` takes no option `{key}`\n\noptions:\n{known}",
+                resolved.recipe.id
+            );
+        }
+    }
+    let missing: Vec<(&String, &OptionSpec)> = declared
+        .iter()
+        .filter(|(name, spec)| spec.required && !provided.contains_key(*name))
+        .collect();
+    if !missing.is_empty() {
+        let lines = missing
+            .iter()
+            .map(|(name, spec)| {
+                let detail = if spec.description.is_empty() {
+                    String::new()
+                } else {
+                    format!("   {}", spec.description)
+                };
+                format!("  --set {name}=...{detail}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let noun = if missing.len() == 1 {
+            "an option"
+        } else {
+            "options"
+        };
+        bail!("recipe `{}` needs {noun}:\n{lines}", resolved.recipe.id);
+    }
+    if provided.is_empty() {
+        return Ok(());
+    }
+
+    for step in &mut resolved.steps {
+        let raw = &mut step.step;
+        for field in [
+            &mut raw.fix,
+            &mut raw.message,
+            &mut raw.file,
+            &mut raw.anchor,
+            &mut raw.from,
+            &mut raw.to,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *field = substitute(field, provided);
+        }
+        for value in [&mut raw.rule, &mut raw.constraints, &mut raw.utils]
+            .into_iter()
+            .flatten()
+        {
+            substitute_value(value, provided);
+        }
+        if let Some(command) = &mut raw.command {
+            for argument in command.iter_mut() {
+                *argument = substitute(argument, provided);
+            }
+        }
+        let rendered = serde_yaml::to_string(&step.step).unwrap_or_default();
+        if let Some(missing) = first_placeholder(&rendered) {
+            bail!(
+                "recipe `{}` uses `${{{missing}}}` but no value was provided for it",
+                resolved.recipe.id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn substitute(text: &str, vars: &BTreeMap<String, String>) -> String {
+    let mut out = text.to_string();
+    for (key, value) in vars {
+        out = out.replace(&format!("${{{key}}}"), value);
+    }
+    out
+}
+
+fn substitute_value(value: &mut serde_yaml::Value, vars: &BTreeMap<String, String>) {
+    match value {
+        serde_yaml::Value::String(text) => *text = substitute(text, vars),
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                substitute_value(item, vars);
+            }
+        }
+        serde_yaml::Value::Mapping(entries) => {
+            for (_, item) in entries.iter_mut() {
+                substitute_value(item, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn first_placeholder(text: &str) -> Option<&str> {
+    let start = text.find("${")? + 2;
+    let end = text[start..].find('}')? + start;
+    Some(&text[start..end])
 }

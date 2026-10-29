@@ -1,6 +1,6 @@
 # Scope: a type-attribution layer for rustrewrite
 
-Status: phase 1 implemented; phases 2-5 not started.
+Status: phases 1 and 2 implemented; phases 3-5 not started.
 
 The question this answers: what would it take to make `rustrewrite` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
 
@@ -97,7 +97,7 @@ Non-negotiable details:
 | --- | --- | --- | --- |
 | 0 | This spike | Done — evidence above | 0.5 d |
 | 1 | LSP client in Rust: JSON-RPC framing, `initialize`, `didOpen`, `rename`, `WorkspaceEdit` application, server shutdown | **Done** — see results below | 3–5 d |
-| 2 | `kind: semantic` step, `--diff`/`--check` support, two flagship recipes (`rust.migrate.change-method-name`, `rust.migrate.change-type`) | `check` reports semantic findings without writing; `run --apply` goes through the gate | 2–3 d |
+| 2 | `kind: semantic` step, `--diff`/`--check` support, two flagship recipes (`rust.migrate.change-method-name`, `rust.migrate.change-type`) | **Done** — see results below | 2–3 d |
 | 3 | References-driven call-site rewriting for the argument primitives | `DeleteMethodArgument` equivalent works on a multi-site fixture | 4–6 d |
 | 4 | Assists as recipe sources: enumerate `codeAction` results and expose them by id | One assist runs end-to-end through the recipe model | 3–5 d |
 | 5 | Performance and lifecycle: cache the loaded workspace, `prefill_caches`, skip the server when no semantic step is present | Cold run on NodeHugDesktop under 90 s, warm semantic run under 10 s | 2–3 d |
@@ -124,6 +124,36 @@ Five things the spike did not predict:
 3. **The server will rename a trait implementation member** rather than refusing it, producing code that no longer implements the trait. The compile gate caught this and rolled it back, which means the gate is load-bearing for semantic edits too, not just structural ones.
 4. **`rustup` proxies `rust-analyzer` and honours the project's toolchain pin.** A project pinned to a toolchain without the component fails at `initialize` with "Unknown binary". The error now names the fix.
 5. **Windows returns verbatim paths** (`\\?\C:\...`) from `canonicalize`, which broke a workspace-containment check until both sides were normalized.
+
+## Phase 2 results
+
+A `kind: semantic` step now runs a rename from a recipe, and recipes can declare parameters:
+
+```yaml
+options:
+  file: { required: true }
+  anchor: { required: true }
+  from: { required: true }
+  to: { required: true }
+steps:
+  - kind: semantic
+    action: rename
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    to: ${to}
+```
+
+That parameterization is the Rust form of OpenRewrite's `@Option`, and it is what makes `ChangeMethodName` and `ChangeType` reusable primitives instead of one recipe per migration. `rustrewrite list` marks the recipes that need `--set`, and `explain` describes each option.
+
+Four decisions worth recording:
+
+1. **An anchor, not a line number.** A line number is invalidated by any edit above the declaration; text on the declaration line is not.
+2. **Structural and semantic steps cannot share a recipe.** The structural pass edits text in memory, so a rename resolved afterwards would be aimed at a file that has already moved. The loader refuses the combination rather than guessing.
+3. **Missing options are listed together**, not one per run, and an unknown `--set` key is rejected rather than silently ignored.
+4. **`check` runs the server too.** A semantic recipe reports its edits and exits 1, exactly like a structural one, and still writes nothing.
+
+Verified: `check` reports the two edits for `Bag::len` and leaves the file byte-identical; `run --apply` renames the declaration and its call, leaves `Vec::len` alone, and passes the gate; `change-type` renames the declaration, the `impl` block and the use site in one pass. Eight integration tests cover this, and the full suite runs in about 21 seconds.
 
 ## Risks
 

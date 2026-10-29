@@ -48,6 +48,8 @@ That trade is why the gate is mandatory rather than optional.
 | `rename --at file:line:col --to NAME [--apply]` | Rename one resolved symbol using rust-analyzer's type information. |
 | `verify [--test]` | The gate on its own: format, compile, optionally test. |
 
+Recipes that take parameters accept `--set key=value`, repeatable, on `check` and `run`.
+
 `--recipe` accepts an id, a namespace prefix (`rust.idiom` selects the whole pack), or `all`.
 
 ## Type-aware renames
@@ -68,6 +70,25 @@ Requirements and cost:
 - `rust-analyzer` on `PATH`. Install with `rustup component add rust-analyzer` — and for a project that pins a toolchain in `rust-toolchain.toml`, add it for that toolchain too.
 - The first request pays for loading the workspace: about 5 s on a small crate, about 30 s on a 40k-line workspace. `--wait` sets the budget (default 180 s).
 - The server may refuse a rename. A trait implementation member cannot be renamed, because the trait requires the name. That is reported as a refusal and nothing is written.
+
+### As recipes
+
+The same capability is available as parameterized recipes, which is what makes it composable with the rest of the catalog:
+
+```
+rustrewrite check --recipe rust.migrate.change-method-name \
+  --set file=src/server.rs \
+  --set 'anchor=fn start(&self)' \
+  --set from=start --set to=spawn
+
+rustrewrite run --recipe rust.migrate.change-type \
+  --set file=src/graph.rs --set 'anchor=struct Bag' \
+  --set from=Bag --set to=Sack --apply
+```
+
+`anchor` is text on the declaration line. It replaces a line number because any edit above the declaration moves a line number, and an anchor does not.
+
+These are the Rust forms of OpenRewrite's `ChangeMethodName` and `ChangeType`: one reusable primitive, configured per call, rather than a hand-written recipe per migration.
 
 ## What the gate does
 
@@ -147,6 +168,31 @@ steps:
     command: ["cargo", "clippy", "--fix", "--all-targets", "--allow-dirty", "--allow-staged"]
 ```
 
+A `semantic` step asks rust-analyzer to rename a resolved symbol. It needs `file`, `from` and `to`, plus either `anchor` (text on the declaration line) or `line`:
+
+```yaml
+steps:
+  - kind: semantic
+    action: rename
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    to: ${to}
+```
+
+A recipe may declare parameters, the equivalent of OpenRewrite's `@Option` fields, and they are substituted into `${name}`:
+
+```yaml
+options:
+  file:
+    description: Path to the file that declares the method.
+    required: true
+```
+
+`rustrewrite list` shows which recipes need `--set`, and `explain` describes each option.
+
+A recipe may not mix `structural` and `semantic` steps. The structural pass edits text in memory, so a rename resolved afterwards would be pointed at a file that has already moved. Split such a change into two recipes and run them in order.
+
 Every recipe that rewrites something should carry at least one `example`.
 `rustrewrite test` runs them all, so a recipe that silently stops matching fails the build rather than quietly doing nothing.
 
@@ -169,6 +215,8 @@ Every recipe that rewrites something should carry at least one `example`.
 | `rust.modernize.extern-crate` | fix | drops redundant `extern crate` declarations |
 | `rust.modernize.legacy-numeric-constants` | fix | `std::i32::MAX` becomes `i32::MAX` |
 | `rust.modernize` | composite | edition-2018 mechanical migration |
+| `rust.migrate.change-method-name` | semantic | rename a resolved method and its true call sites |
+| `rust.migrate.change-type` | semantic | rename a resolved type and every reference |
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |
