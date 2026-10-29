@@ -1,0 +1,40 @@
+id: rust.migrate.add-argument
+name: Add a method argument
+description: >-
+  Inserts an argument at a position in every resolved call site, and the matching
+  parameter in the declaration. Both sides must move together or the crate stops
+  compiling, which is why this is one recipe and not two. This is the Rust form of
+  OpenRewrite's AddLiteralMethodArgument plus AddMethodParameter.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the function, relative to the run root.
+    required: true
+  anchor:
+    description: Text on the declaration line, used to find it.
+    required: true
+  from:
+    description: The function or method name.
+    required: true
+  index:
+    description: Zero-based argument position to insert at, counted at the call site.
+    required: true
+  argument:
+    description: The expression written at every call site, e.g. `"trace"` or `3`.
+    required: true
+  parameter:
+    description: >-
+      The parameter written into the declaration, e.g. `level: &str`.
+    required: true
+
+steps:
+  - kind: semantic
+    action: add-argument
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    index: ${index}
+    argument: ${argument}
+    parameter: ${parameter}

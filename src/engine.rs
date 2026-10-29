@@ -90,7 +90,7 @@ pub struct Engine {
     semantic_steps: Vec<SemanticStep>,
 }
 
-/// A rename that has to be resolved by the compiler, not matched by text.
+/// A rename or argument rewrite that has to be resolved by the compiler.
 #[derive(Debug, Clone)]
 pub struct SemanticStep {
     pub recipe: String,
@@ -100,6 +100,10 @@ pub struct SemanticStep {
     pub line: Option<u32>,
     pub from: String,
     pub to: String,
+    pub index: Option<usize>,
+    pub order: Option<Vec<usize>>,
+    pub argument: Option<String>,
+    pub parameter: Option<String>,
 }
 
 impl Engine {
@@ -143,6 +147,35 @@ impl Engine {
                         cargo_steps.push((resolved_step.recipe.clone(), command));
                     }
                     StepKind::Semantic => {
+                        let index = step
+                            .index
+                            .as_deref()
+                            .map(|raw| {
+                                raw.trim().parse::<usize>().with_context(|| {
+                                    format!(
+                                        "recipe `{}`: `index` must be a number, got `{raw}`",
+                                        resolved_step.recipe
+                                    )
+                                })
+                            })
+                            .transpose()?;
+                        let order = step
+                            .order
+                            .as_deref()
+                            .map(|raw| -> Result<Vec<usize>> {
+                                raw.split(',')
+                                    .map(|part| {
+                                        part.trim().parse::<usize>().with_context(|| {
+                                            format!(
+                                                "recipe `{}`: `order` must be a comma-separated \
+                                                 list of numbers, got `{raw}`",
+                                                resolved_step.recipe
+                                            )
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .transpose()?;
                         semantic_steps.push(SemanticStep {
                             recipe: resolved_step.recipe.clone(),
                             action: step.action.unwrap_or_default(),
@@ -151,6 +184,10 @@ impl Engine {
                             line: step.line,
                             from: step.from.clone().unwrap_or_default(),
                             to: step.to.clone().unwrap_or_default(),
+                            index,
+                            order,
+                            argument: step.argument.clone(),
+                            parameter: step.parameter.clone(),
                         });
                     }
                 }

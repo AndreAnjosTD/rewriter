@@ -90,6 +90,26 @@ rustrewrite run --recipe rust.migrate.change-type \
 
 These are the Rust forms of OpenRewrite's `ChangeMethodName` and `ChangeType`: one reusable primitive, configured per call, rather than a hand-written recipe per migration.
 
+### Rewriting call sites
+
+Changing an argument list is not one symbol, it is every call plus the declaration, and getting one wrong stops the crate compiling. Three recipes handle that family:
+
+```
+rustrewrite run --recipe rust.migrate.delete-argument \
+  --set file=src/main.rs --set 'anchor=fn record(scope: &str' \
+  --set from=record --set index=0 --apply
+```
+
+| Recipe | `--set` | Effect |
+| --- | --- | --- |
+| `delete-argument` | `index` | Removes that argument from every call and the matching parameter from the declaration |
+| `add-argument` | `index`, `argument`, `parameter` | Inserts the argument at every call and the parameter in the declaration |
+| `reorder-arguments` | `order` | Permutes both sides; `1,0` swaps the first two |
+
+A `self` receiver occupies parameter slot zero but no argument slot, so the index shift is handled for you. References that are not call sites — a function used as a value, for example — are reported and left alone rather than rewritten into nonsense.
+
+These are OpenRewrite's `DeleteMethodArgument`, `AddLiteralMethodArgument` and `ReorderMethodArguments`, with the matching `AddMethodParameter` and `RemoveMethodParameter` folded in, because Rust has no optional parameters.
+
 ## What the gate does
 
 With `--apply`, in order:
@@ -217,6 +237,9 @@ Every recipe that rewrites something should carry at least one `example`.
 | `rust.modernize` | composite | edition-2018 mechanical migration |
 | `rust.migrate.change-method-name` | semantic | rename a resolved method and its true call sites |
 | `rust.migrate.change-type` | semantic | rename a resolved type and every reference |
+| `rust.migrate.delete-argument` | semantic | drop an argument from a call and a parameter from the declaration |
+| `rust.migrate.add-argument` | semantic | insert an argument at every call site and a parameter in the declaration |
+| `rust.migrate.reorder-arguments` | semantic | permute arguments at every call site and parameters in the declaration |
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |

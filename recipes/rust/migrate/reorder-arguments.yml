@@ -1,0 +1,33 @@
+id: rust.migrate.reorder-arguments
+name: Reorder method arguments
+description: >-
+  Permutes the argument order at every resolved call site and the parameter order
+  in the declaration. `order` names, for each new position, which old position
+  goes there: `1,0` swaps the first two. This is the Rust form of OpenRewrite's
+  ReorderMethodArguments.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the function, relative to the run root.
+    required: true
+  anchor:
+    description: Text on the declaration line, used to find it.
+    required: true
+  from:
+    description: The function or method name.
+    required: true
+  order:
+    description: >-
+      Comma-separated permutation over argument positions, e.g. `1,0,2`. It must
+      name every position exactly once. A `self` receiver is handled automatically.
+    required: true
+
+steps:
+  - kind: semantic
+    action: reorder-arguments
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    order: ${order}

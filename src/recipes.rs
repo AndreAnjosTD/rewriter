@@ -59,6 +59,9 @@ pub enum StepKind {
 pub enum SemanticAction {
     #[default]
     Rename,
+    DeleteArgument,
+    AddArgument,
+    ReorderArguments,
 }
 
 /// A recipe parameter, the equivalent of OpenRewrite's `@Option`.
@@ -109,6 +112,15 @@ pub struct Step {
     pub from: Option<String>,
     /// The new name.
     pub to: Option<String>,
+    /// Argument position for the argument operations, as text so that an option
+    /// can supply it. Parsed once the options are substituted.
+    pub index: Option<String>,
+    /// Comma-separated permutation, e.g. `1,0,2`.
+    pub order: Option<String>,
+    /// The text written at every call site by `add-argument`.
+    pub argument: Option<String>,
+    /// The parameter written into the declaration by `add-argument`, e.g. `retries: u32`.
+    pub parameter: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -248,9 +260,9 @@ impl Catalog {
                     bail!("recipe `{}` has a cargo step with no `command`", recipe.id)
                 }
                 StepKind::Semantic => {
-                    if step.file.is_none() || step.from.is_none() || step.to.is_none() {
+                    if step.file.is_none() || step.from.is_none() {
                         bail!(
-                            "recipe `{}` has a semantic step without `file`, `from` and `to`",
+                            "recipe `{}` has a semantic step without `file` and `from`",
                             recipe.id
                         );
                     }
@@ -259,6 +271,32 @@ impl Catalog {
                             "recipe `{}` has a semantic step with neither `anchor` nor `line`",
                             recipe.id
                         );
+                    }
+                    let action = step.action.unwrap_or_default();
+                    match action {
+                        SemanticAction::Rename if step.to.is_none() => {
+                            bail!("recipe `{}` has a rename step without `to`", recipe.id)
+                        }
+                        SemanticAction::DeleteArgument if step.index.is_none() => bail!(
+                            "recipe `{}` has a delete-argument step without `index`",
+                            recipe.id
+                        ),
+                        SemanticAction::AddArgument
+                            if step.index.is_none()
+                                || step.argument.is_none()
+                                || step.parameter.is_none() =>
+                        {
+                            bail!(
+                                "recipe `{}` has an add-argument step without `index`, \
+                                 `argument` and `parameter`",
+                                recipe.id
+                            )
+                        }
+                        SemanticAction::ReorderArguments if step.order.is_none() => bail!(
+                            "recipe `{}` has a reorder-arguments step without `order`",
+                            recipe.id
+                        ),
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -451,6 +489,10 @@ pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String
             &mut raw.anchor,
             &mut raw.from,
             &mut raw.to,
+            &mut raw.index,
+            &mut raw.order,
+            &mut raw.argument,
+            &mut raw.parameter,
         ]
         .into_iter()
         .flatten()

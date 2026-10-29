@@ -4,6 +4,7 @@
 //! recipe can compose other recipes, `check` reports without writing, `run`
 //! rewrites, and a failing compile rolls the whole run back.
 
+mod callsites;
 mod engine;
 mod recipes;
 mod semantic;
@@ -608,17 +609,42 @@ fn run_semantic(
         }
 
         let edits = match step.action {
-            SemanticAction::Rename => server.rename(&path, position, &step.to, budget)?,
+            SemanticAction::Rename => {
+                let edits = server.rename(&path, position, &step.to, budget)?;
+                if edits.is_empty() {
+                    bail!(
+                        "`{}` declined to rename `{}` in {}.\n\
+                         A trait implementation member cannot be renamed. Nothing was written.",
+                        step.recipe,
+                        step.from,
+                        step.file.display()
+                    );
+                }
+                edits
+            }
+            _ => {
+                let op = argument_op(step)?;
+                let rewrites = plan_argument_rewrites(
+                    &mut server,
+                    step,
+                    &op,
+                    &path,
+                    &text,
+                    position,
+                    encoding,
+                    budget,
+                )?;
+                apply_rewrites(
+                    &mut server,
+                    &mut opened,
+                    &step.recipe,
+                    rewrites,
+                    write,
+                    &mut outcome,
+                )?;
+                continue;
+            }
         };
-        if edits.is_empty() {
-            bail!(
-                "`{}` declined to rename `{}` in {}.\n\
-                 A trait implementation member cannot be renamed. Nothing was written.",
-                step.recipe,
-                step.from,
-                step.file.display()
-            );
-        }
 
         for file_edits in &edits {
             let current = std::fs::read_to_string(&file_edits.path)
@@ -649,6 +675,217 @@ fn run_semantic(
 
     server.shutdown();
     Ok(outcome)
+}
+
+fn argument_op(step: &SemanticStep) -> Result<callsites::Op> {
+    match step.action {
+        SemanticAction::DeleteArgument => Ok(callsites::Op::Delete {
+            index: step
+                .index
+                .with_context(|| format!("`{}` needs an index", step.recipe))?,
+        }),
+        SemanticAction::AddArgument => Ok(callsites::Op::Add {
+            index: step
+                .index
+                .with_context(|| format!("`{}` needs an index", step.recipe))?,
+            text: step
+                .argument
+                .clone()
+                .with_context(|| format!("`{}` needs an argument", step.recipe))?,
+        }),
+        SemanticAction::ReorderArguments => Ok(callsites::Op::Reorder {
+            order: step
+                .order
+                .clone()
+                .with_context(|| format!("`{}` needs an order", step.recipe))?,
+        }),
+        SemanticAction::Rename => unreachable!("rename is handled separately"),
+    }
+}
+
+/// Work out every list that has to change: the declaration's parameters and the
+/// arguments of every resolved call site.
+#[allow(clippy::too_many_arguments)]
+fn plan_argument_rewrites(
+    server: &mut Server,
+    step: &SemanticStep,
+    op: &callsites::Op,
+    decl_path: &Path,
+    decl_text: &str,
+    position: semantic::Position,
+    encoding: semantic::PositionEncoding,
+    budget: std::time::Duration,
+) -> Result<Vec<(PathBuf, std::ops::Range<usize>, String)>> {
+    let offset = semantic::position_to_offset(decl_text, position, encoding)
+        .with_context(|| format!("locating `{}` in {}", step.from, decl_path.display()))?;
+    let (site, has_self) = callsites::declaration(decl_text, offset).with_context(|| {
+        format!(
+            "`{}` in {} is not inside a function signature",
+            step.from,
+            decl_path.display()
+        )
+    })?;
+
+    // A receiver occupies parameter slot zero but no argument slot, so every
+    // argument index shifts by one when applied to the declaration.
+    let shift = usize::from(has_self);
+    let (decl_op, decl_index) = match op {
+        callsites::Op::Delete { index } => (
+            callsites::Op::Delete {
+                index: index + shift,
+            },
+            index + shift,
+        ),
+        callsites::Op::Add { index, .. } => (
+            callsites::Op::Add {
+                index: index + shift,
+                text: step
+                    .parameter
+                    .clone()
+                    .with_context(|| format!("`{}` needs a parameter", step.recipe))?,
+            },
+            index + shift,
+        ),
+        callsites::Op::Reorder { order } => {
+            let shifted: Vec<usize> = if has_self {
+                std::iter::once(0)
+                    .chain(order.iter().map(|position| position + shift))
+                    .collect()
+            } else {
+                order.clone()
+            };
+            (callsites::Op::Reorder { order: shifted }, 0)
+        }
+    };
+    let items = callsites::rewrite(&site.items, &decl_op, decl_index)?;
+    let mut rewrites = vec![(
+        decl_path.to_path_buf(),
+        site.range.clone(),
+        callsites::render(&items),
+    )];
+
+    let references = server.references(decl_path, position, budget)?;
+    if references.is_empty() {
+        bail!(
+            "`{}` found no references to `{}`, so there is nothing to rewrite",
+            step.recipe,
+            step.from
+        );
+    }
+
+    let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
+    texts.insert(decl_path.to_path_buf(), decl_text.to_string());
+    let mut skipped = 0usize;
+
+    for reference in references {
+        let text = match texts.get(&reference.path) {
+            Some(text) => text.clone(),
+            None => {
+                let text = std::fs::read_to_string(&reference.path)
+                    .with_context(|| format!("reading {}", reference.path.display()))?;
+                texts.insert(reference.path.clone(), text.clone());
+                text
+            }
+        };
+        let Some(reference_offset) =
+            semantic::position_to_offset(&text, reference.range.start, encoding)
+        else {
+            skipped += 1;
+            continue;
+        };
+        match callsites::call_site(&text, reference_offset) {
+            Some(site) => {
+                let index = match op {
+                    callsites::Op::Delete { index } | callsites::Op::Add { index, .. } => *index,
+                    callsites::Op::Reorder { .. } => 0,
+                };
+                let items = callsites::rewrite(&site.items, op, index)?;
+                rewrites.push((
+                    reference.path.clone(),
+                    site.range.clone(),
+                    callsites::render(&items),
+                ));
+            }
+            None => skipped += 1,
+        }
+    }
+
+    if skipped > 0 {
+        eprintln!(
+            "note: {skipped} reference(s) to `{}` were not call sites and were left alone",
+            step.from
+        );
+    }
+    Ok(rewrites)
+}
+
+/// Apply the planned list rewrites, one file at a time, rejecting overlaps
+/// instead of corrupting a file when two rewrites disagree.
+fn apply_rewrites(
+    server: &mut Server,
+    opened: &mut std::collections::HashSet<PathBuf>,
+    recipe: &str,
+    rewrites: Vec<(PathBuf, std::ops::Range<usize>, String)>,
+    write: bool,
+    outcome: &mut SemanticOutcome,
+) -> Result<()> {
+    let mut by_file: BTreeMap<PathBuf, Vec<(std::ops::Range<usize>, String)>> = BTreeMap::new();
+    for (path, range, replacement) in rewrites {
+        by_file.entry(path).or_default().push((range, replacement));
+    }
+
+    for (path, mut edits) in by_file {
+        let original = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        edits.sort_by_key(|(range, _)| range.start);
+        for pair in edits.windows(2) {
+            if pair[0].0.end > pair[1].0.start {
+                bail!(
+                    "two rewrites overlap in {}; refusing to guess",
+                    path.display()
+                );
+            }
+        }
+
+        let mut updated = original.clone();
+        for (range, replacement) in edits.iter().rev() {
+            updated.replace_range(range.clone(), replacement);
+        }
+        for (range, replacement) in &edits {
+            let (line, column) = line_column(&original, range.start);
+            outcome.findings.push(Finding {
+                recipe: recipe.to_string(),
+                path: path.clone(),
+                line,
+                column,
+                before: original[range.clone()].to_string(),
+                after: Some(replacement.clone()),
+                message: String::new(),
+            });
+        }
+        if updated != original {
+            if write {
+                std::fs::write(&path, &updated)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                server.refresh(&path, &updated)?;
+                opened.insert(path.clone());
+            }
+            outcome.writes.push((path, original, updated));
+        }
+    }
+    Ok(())
+}
+
+fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text[..offset];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .map(|tail| tail.chars().count())
+        .unwrap_or(0)
+        + 1;
+    (line, column)
 }
 
 /// Find the identifier to rename, by anchor text or by line number.

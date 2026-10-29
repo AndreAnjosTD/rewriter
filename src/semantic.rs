@@ -73,6 +73,13 @@ pub struct FileEdits {
     pub edits: Vec<TextEdit>,
 }
 
+/// A reference to a resolved symbol: a call, an import, or a use as a value.
+#[derive(Debug, Clone)]
+pub struct Location {
+    pub path: PathBuf,
+    pub range: Range,
+}
+
 pub struct Server {
     child: Child,
     writer: Arc<Mutex<ChildStdin>>,
@@ -406,6 +413,67 @@ impl Server {
         }
     }
 
+    /// Every reference to the symbol at `position`. `includeDeclaration` is false
+    /// so the result is uses only, which is what a call-site rewrite needs.
+    pub fn references(
+        &mut self,
+        path: &Path,
+        position: Position,
+        budget: Duration,
+    ) -> Result<Vec<Location>> {
+        let deadline = Instant::now() + budget;
+        // An empty list is ambiguous: no references, or not analysed yet. Give it
+        // a short grace to tell the two apart, then trust the answer.
+        let grace = Instant::now() + budget.min(Duration::from_secs(8));
+        let mut delay = Duration::from_millis(250);
+        let mut last_error: Option<anyhow::Error> = None;
+        let mut saw_empty = false;
+        loop {
+            match self.request(
+                "textDocument/references",
+                json!({
+                    "textDocument": { "uri": path_to_uri(path) },
+                    "position": { "line": position.line, "character": position.character },
+                    "context": { "includeDeclaration": false }
+                }),
+                DEFAULT_REQUEST_TIMEOUT,
+            ) {
+                Ok(Value::Null) => {}
+                Ok(value) => {
+                    let locations = parse_locations(value)?;
+                    if locations.is_empty() {
+                        saw_empty = true;
+                    } else {
+                        return Ok(locations);
+                    }
+                }
+                Err(err) => last_error = Some(err),
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            if saw_empty && now >= grace {
+                return Ok(Vec::new());
+            }
+            thread::sleep(delay);
+            delay = (delay * 2).min(Duration::from_secs(2));
+        }
+        if saw_empty {
+            return Ok(Vec::new());
+        }
+        match last_error {
+            Some(err) => {
+                Err(err.context("rust-analyzer produced no references before the deadline"))
+            }
+            None => bail!(
+                "rust-analyzer produced no references within {}s.\n\
+                 On a large workspace the first request pays for the whole load; raise --wait.",
+                budget.as_secs()
+            ),
+        }
+    }
+
     pub fn shutdown(&mut self) {
         let _ = self.request("shutdown", Value::Null, Duration::from_secs(5));
         self.notify("exit", Value::Null);
@@ -507,6 +575,29 @@ fn parse_workspace_edit(value: Value) -> Result<Vec<FileEdits>> {
         .collect())
 }
 
+fn parse_locations(value: Value) -> Result<Vec<Location>> {
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RawLocation {
+        uri: String,
+        range: Range,
+    }
+    let raw: Vec<RawLocation> =
+        serde_json::from_value(value).context("parsing textDocument/references")?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|location| {
+            uri_to_path(&location.uri).map(|path| Location {
+                path,
+                range: location.range,
+            })
+        })
+        .collect())
+}
+
 /// Apply edits to in-memory text, returning the new text.
 pub fn apply_edits(text: &str, edits: &[TextEdit], encoding: PositionEncoding) -> Result<String> {
     let mut offsets = Vec::with_capacity(edits.len());
@@ -533,7 +624,11 @@ pub fn apply_edits(text: &str, edits: &[TextEdit], encoding: PositionEncoding) -
     Ok(result)
 }
 
-fn position_to_offset(text: &str, position: Position, encoding: PositionEncoding) -> Option<usize> {
+pub fn position_to_offset(
+    text: &str,
+    position: Position,
+    encoding: PositionEncoding,
+) -> Option<usize> {
     let mut line_start = 0usize;
     for _ in 0..position.line {
         line_start += text[line_start..].find('\n')? + 1;

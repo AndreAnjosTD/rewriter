@@ -1,0 +1,35 @@
+id: rust.migrate.delete-argument
+name: Delete a method argument
+description: >-
+  Removes one argument from every resolved call site and the matching parameter
+  from the declaration. A call-site-only rewrite would not compile, so both sides
+  move together. The body must already tolerate the parameter going away; the
+  compile gate is what proves it. This is the Rust form of OpenRewrite's
+  DeleteMethodArgument, with RemoveMethodParameter folded in because Rust has no
+  optional parameters.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the function, relative to the run root.
+    required: true
+  anchor:
+    description: Text on the declaration line, used to find it.
+    required: true
+  from:
+    description: The function or method name.
+    required: true
+  index:
+    description: >-
+      Zero-based argument position to remove, counted at the call site. A `self`
+      receiver is handled automatically.
+    required: true
+
+steps:
+  - kind: semantic
+    action: delete-argument
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    index: ${index}

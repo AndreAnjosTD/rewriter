@@ -1,6 +1,6 @@
 # Scope: a type-attribution layer for rustrewrite
 
-Status: phases 1 and 2 implemented; phases 3-5 not started.
+Status: phases 1-3 implemented; phases 4-5 not started.
 
 The question this answers: what would it take to make `rustrewrite` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
 
@@ -98,7 +98,7 @@ Non-negotiable details:
 | 0 | This spike | Done — evidence above | 0.5 d |
 | 1 | LSP client in Rust: JSON-RPC framing, `initialize`, `didOpen`, `rename`, `WorkspaceEdit` application, server shutdown | **Done** — see results below | 3–5 d |
 | 2 | `kind: semantic` step, `--diff`/`--check` support, two flagship recipes (`rust.migrate.change-method-name`, `rust.migrate.change-type`) | **Done** — see results below | 2–3 d |
-| 3 | References-driven call-site rewriting for the argument primitives | `DeleteMethodArgument` equivalent works on a multi-site fixture | 4–6 d |
+| 3 | References-driven call-site rewriting for the argument primitives | **Done** — see results below | 4–6 d |
 | 4 | Assists as recipe sources: enumerate `codeAction` results and expose them by id | One assist runs end-to-end through the recipe model | 3–5 d |
 | 5 | Performance and lifecycle: cache the loaded workspace, `prefill_caches`, skip the server when no semantic step is present | Cold run on NodeHugDesktop under 90 s, warm semantic run under 10 s | 2–3 d |
 
@@ -154,6 +154,27 @@ Four decisions worth recording:
 4. **`check` runs the server too.** A semantic recipe reports its edits and exits 1, exactly like a structural one, and still writes nothing.
 
 Verified: `check` reports the two edits for `Bag::len` and leaves the file byte-identical; `run --apply` renames the declaration and its call, leaves `Vec::len` alone, and passes the gate; `change-type` renames the declaration, the `impl` block and the use site in one pass. Eight integration tests cover this, and the full suite runs in about 21 seconds.
+
+## Phase 3 results
+
+`textDocument/references` plus a local AST pass now rewrite argument lists:
+
+| Recipe | OpenRewrite origin |
+| --- | --- |
+| `rust.migrate.delete-argument` | `DeleteMethodArgument` + `RemoveMethodParameter` |
+| `rust.migrate.add-argument` | `AddLiteralMethodArgument` + `AddMethodParameter` |
+| `rust.migrate.reorder-arguments` | `ReorderMethodArguments` |
+
+The dispatch is: locate the declaration by anchor, ask the server for every reference, and for each one decide whether it is a call site. A reference inside the callee position of a `call_expression` is rewritten; anything else — a function used as a value, an import — is counted and reported, never rewritten into nonsense. The declaration's parameter list moves in the same run, because a call-site-only edit does not compile.
+
+Four things this phase taught:
+
+1. **A `self` receiver breaks index arithmetic.** It occupies parameter slot zero but no argument slot, so every declaration-side index shifts by one. Reordering was worse: prepending the receiver unconditionally produced a three-position permutation for a two-parameter function.
+2. **An empty reference list is ambiguous.** On the real workspace the server answered `[]` while still indexing, which read as "this function is never called". Empty results now get a short grace before being believed — the same class of bug as the `null` rename response in phase 1.
+3. **References are not call sites.** `textDocument/references` happily returns imports and function-value uses. Filtering them by AST is not optional; rewriting them would produce code that compiles but means something else.
+4. **Overlapping edits must be refused, not merged.** Two rewrites that touch the same bytes now fail loudly rather than being applied in an order that happens to work.
+
+Verified: on the fixture, deleting argument 0 rewrites the declaration and all three call sites and the crate still builds; the same works through a `self` receiver; adding and reordering both compile. On NodeHugDesktop, reordering a two-parameter test helper finds the declaration and eight call sites in one dry run. Nineteen integration tests across three files, about 38 seconds.
 
 ## Risks
 
