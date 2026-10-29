@@ -1,0 +1,65 @@
+id: rust.migrate.string-literal-to-constant
+name: Replace a string literal with a constant
+description: >-
+  Replaces every string literal whose source spelling is exactly `from` with the
+  constant path `to`, the Rust form of OpenRewrite's
+  ReplaceStringLiteralWithConstant. The constant must already exist and be in
+  scope at every rewritten site; this recipe does not create or import it, and
+  the compile gate is what proves the result builds. Plain `"..."`, raw
+  `r"..."` and hashed raw `r#"..."#` literals are all replaced whole, so each
+  becomes the constant expression. Byte and C string literals are not rewritten.
+
+  `from` is written as it appears between the quotes: an escaped quote is `\"`.
+tags: [migrate, string]
+risk: low
+
+options:
+  from:
+    description: >-
+      The literal's source spelling, without the surrounding quotes or any
+      prefix. Escape sequences are written as in source, so an escaped quote is
+      `\"`.
+    required: true
+    literal: true
+  to:
+    description: >-
+      The constant path expression, for example `crate::PROD_HOST`. It must
+      already exist and be in scope where the literal was.
+    required: true
+    literal: true
+
+steps:
+  # A plain literal pattern compares the exact source spelling. The prefix
+  # guard keeps `b"..."` and `c"..."` out, because those are not `&str`.
+  - rule:
+      all:
+        - pattern: '"${from}"'
+        - not:
+            regex: '^[bc]"'
+    fix: '${to}'
+  # A raw literal pattern descends to its single `string_content` child, so the
+  # whole node is matched through `has` and replaced as one expression.
+  - rule:
+      all:
+        - kind: raw_string_literal
+        - not:
+            regex: '^[bc]'
+        - has:
+            all:
+              - kind: string_content
+              - pattern: 'r########"${from}"########'
+    fix: '${to}'
+
+examples:
+  - before: let host = "api.internal";
+    after: let host = crate::PROD_HOST;
+    options:
+      from: api.internal
+      to: crate::PROD_HOST
+    why: The literal becomes the constant path; the constant is assumed to exist.
+  - before: let host = r#"api.internal"#;
+    after: let host = crate::PROD_HOST;
+    options:
+      from: api.internal
+      to: crate::PROD_HOST
+    why: A raw literal is replaced as a whole, delimiter and all.

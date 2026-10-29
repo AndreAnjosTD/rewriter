@@ -1,0 +1,91 @@
+id: rust.migrate.replace-string-literal
+name: Replace a string literal's value
+description: >-
+  Replaces every string literal whose source spelling is exactly `from` with
+  `to`, the Rust form of OpenRewrite's ReplaceStringLiteralValue. The value
+  changes; the literal stays a literal. Plain `"..."`, raw `r"..."` and hashed
+  raw `r#"..."#` forms are covered, and a raw literal keeps its delimiter and
+  hash count. A comment, a doc comment, an identifier, and a longer format
+  string that merely contains the text are all left alone. Byte and C string
+  literals are not rewritten.
+
+  `from` and `to` are written as they appear between the quotes: an escaped
+  quote is `\"`, and a raw literal's backslashes are literal characters.
+tags: [migrate, string]
+risk: low
+
+options:
+  from:
+    description: >-
+      The literal's source spelling, without the surrounding quotes or any
+      prefix. Escape sequences are written as in source, so an escaped quote is
+      `\"`.
+    required: true
+    literal: true
+  to:
+    description: The replacement source spelling, without quotes or any prefix.
+    required: true
+    literal: true
+
+steps:
+  # A plain literal pattern compares the exact source spelling. The prefix
+  # guard keeps `b"..."` and `c"..."` out, because those are not `&str`.
+  - rule:
+      all:
+        - pattern: '"${from}"'
+        - not:
+            regex: '^[bc]"'
+    fix: '"${to}"'
+  # A raw literal pattern descends to its single `string_content` child, so the
+  # rule matches that child explicitly and rewrites only the value. The
+  # delimiter and its hashes then survive untouched.
+  - rule:
+      all:
+        - kind: string_content
+        - inside:
+            all:
+              - kind: raw_string_literal
+              - not:
+                  regex: '^[bc]'
+        - pattern: 'r########"${from}"########'
+    fix: '${to}'
+
+examples:
+  - before: let host = "api.internal";
+    after: let host = "api.example.com";
+    options:
+      from: api.internal
+      to: api.example.com
+    why: The literal value changes and stays a literal.
+  - before: let pattern = r"api.internal";
+    after: let pattern = r"api.example.com";
+    options:
+      from: api.internal
+      to: api.example.com
+    why: A raw literal is matched by its source spelling and keeps its form.
+  - before: |
+      // api.internal is the old name.
+      /// doc api.internal
+      let host = "api.internal";
+      let note = format!("host is api.internal");
+      let bytes = b"api.internal";
+      let api_internal = 1;
+    after: |
+      // api.internal is the old name.
+      /// doc api.internal
+      let host = "api.example.com";
+      let note = format!("host is api.internal");
+      let bytes = b"api.internal";
+      let api_internal = 1;
+    options:
+      from: api.internal
+      to: api.example.com
+    why: >-
+      Comments, identifiers, byte strings and longer strings that only contain
+      the text stay.
+  - before: 'let greeting = "say \"hi\"";'
+    after: 'let greeting = "say \"bye\"";'
+    options:
+      from: say \"hi\"
+      to: say \"bye\"
+    why: An escaped quote is part of the source spelling to match.

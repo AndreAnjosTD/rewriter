@@ -222,6 +222,22 @@ rustrewrite run --recipe rust.migrate.assist \
 
 The assist is requested over the token at `from`, matched by title, resolved into concrete edits, applied, and then compiled like any other change. When the title does not match, the error lists every assist the analyzer offers at that position, which is the practical way to discover them.
 
+## String literals
+
+Two structural primitives cover OpenRewrite's string-literal recipes. Both match a literal by its exact source spelling, so a comment, an identifier, or a longer string that merely contains the text is untouched, and both cover plain and raw literals. A raw literal keeps its delimiter and hash count.
+
+```
+rustrewrite run --recipe rust.migrate.replace-string-literal \
+  --set from=api.internal --set to=api.example.com --apply
+
+rustrewrite run --recipe rust.migrate.string-literal-to-constant \
+  --set from=api.internal --set to=crate::PROD_HOST --apply
+```
+
+`from`, and the replacement value for `replace-string-literal`, are written as they appear between the quotes, so an escaped quote is `\"`, and a raw literal's backslashes are literal characters. Byte (`b"..."`) and C (`c"..."`) string literals are not rewritten.
+
+`replace-string-literal` changes the value and leaves a literal. `string-literal-to-constant` replaces the whole literal with an expression, and it does not create or import anything: the constant has to exist and be in scope where the literal was. The compile gate is what proves it, and a missing constant fails the run and rolls the change back.
+
 ## What the gate does
 
 With `--apply`, in order:
@@ -323,10 +339,23 @@ options:
 
 `rustrewrite list` shows which recipes need `--set`, and `explain` describes each option.
 
+An option marked `literal: true` is substituted into an ast-grep pattern or template as text, so it cannot contain an ast-grep metavariable (`$NAME`, `$_`, `$5`, or `$$$`) or a recipe placeholder (`${...}`). The substitution is refused with that explanation rather than matching or compiling something unintended; a literal `$name` is fine.
+
 A recipe may not mix `structural` and `semantic` steps. The structural pass edits text in memory, so a rename resolved afterwards would be pointed at a file that has already moved. Split such a change into two recipes and run them in order.
 
 Every recipe that rewrites something should carry at least one `example`.
 `rustrewrite test` runs them all, so a recipe that silently stops matching fails the build rather than quietly doing nothing.
+
+An example of a recipe that declares options carries the values it needs, so `test` and `explain` exercise the real substitution instead of a `${name}` placeholder:
+
+```yaml
+examples:
+  - before: let host = "api.internal";
+    after: let host = "api.example.com";
+    options:
+      from: api.internal
+      to: api.example.com
+```
 
 ## The catalog
 
@@ -356,6 +385,8 @@ Every recipe that rewrites something should carry at least one `example`.
 | `rust.migrate.reorder-arguments` | semantic | permute arguments at every call site and parameters in the declaration |
 | `rust.migrate.assist` | semantic | run one of rust-analyzer's built-in assists, chosen by title |
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
+| `rust.migrate.replace-string-literal` | fix | a string literal's exact value, plain or raw, becomes another value |
+| `rust.migrate.string-literal-to-constant` | fix | a string literal becomes an existing constant expression |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |
 | `rust.cleanup` | composite | idiom pack, then compiler suggestions |
@@ -380,6 +411,7 @@ The decision belongs to the reviewer, so the tool reports it and writes nothing.
 - **Resolved renames do not reach inside macro invocations.** rust-analyzer omits edits for tokens inside a macro call such as `println!`. Keep the renamed use outside the macro or update it by hand; the gate catches the breakage.
 - **The gate needs the crate to compile before you start.** A pre-broken tree fails at the gate and rolls back, which is correct but unsurprising.
 - **`cargo fmt` rewrites formatting after a fix.** Replacements are syntactically correct but not always layout-correct; the formatter is the last mile.
+- **A raw string value containing an unescaped double quote is not matched by `replace-string-literal`.** The recipe shares one `from` value with a plain-literal pattern, and that pattern cannot express a raw quote. A plain literal's escaped quote (`\"`) is supported; a raw value that needs an actual quote is left alone rather than guessed at.
 
 ## Development
 
