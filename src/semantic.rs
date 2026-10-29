@@ -80,6 +80,15 @@ pub struct Location {
     pub range: Range,
 }
 
+/// One assist offered by the server. The raw JSON is kept because resolving an
+/// action means sending it back verbatim.
+#[derive(Debug, Clone)]
+pub struct CodeAction {
+    pub title: String,
+    pub kind: Option<String>,
+    raw: Value,
+}
+
 pub struct Server {
     child: Child,
     writer: Arc<Mutex<ChildStdin>>,
@@ -165,7 +174,26 @@ impl Server {
                     "capabilities": {
                         "general": { "positionEncodings": ["utf-8"] },
                         "window": { "workDoneProgress": true },
-                        "textDocument": { "rename": { "prepareSupport": true } }
+                        "textDocument": {
+                            "rename": { "prepareSupport": true },
+                            // Without literal support the server returns no
+                            // assists at all, and without resolveSupport it
+                            // returns them without the edit that makes them
+                            // useful.
+                            "codeAction": {
+                                "codeActionLiteralSupport": {
+                                    "codeActionKind": {
+                                        "valueSet": [
+                                            "", "quickfix", "refactor",
+                                            "refactor.extract", "refactor.inline",
+                                            "refactor.rewrite", "source",
+                                            "source.fixAll"
+                                        ]
+                                    }
+                                },
+                                "resolveSupport": { "properties": ["edit"] }
+                            }
+                        }
                     },
                     "workspaceFolders": null
                 }),
@@ -474,6 +502,58 @@ impl Server {
         }
     }
 
+    /// Assists the server offers at `range`, in the order it returns them.
+    ///
+    /// rust-analyzer answers with `data` and no edit; the edit arrives from
+    /// `codeAction/resolve`, so the raw action is kept for that round trip.
+    pub fn code_actions(
+        &mut self,
+        path: &Path,
+        range: Range,
+        budget: Duration,
+    ) -> Result<Vec<CodeAction>> {
+        let deadline = Instant::now() + budget;
+        let grace = Instant::now() + budget.min(Duration::from_secs(8));
+        let mut delay = Duration::from_millis(250);
+        loop {
+            let value = self.request(
+                "textDocument/codeAction",
+                json!({
+                    "textDocument": { "uri": path_to_uri(path) },
+                    "range": {
+                        "start": { "line": range.start.line, "character": range.start.character },
+                        "end": { "line": range.end.line, "character": range.end.character }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+                DEFAULT_REQUEST_TIMEOUT,
+            )?;
+            let actions = parse_code_actions(value);
+            if !actions.is_empty() {
+                return Ok(actions);
+            }
+            let now = Instant::now();
+            if now >= deadline || now >= grace {
+                return Ok(Vec::new());
+            }
+            thread::sleep(delay);
+            delay = (delay * 2).min(Duration::from_secs(2));
+        }
+    }
+
+    /// Turn an assist into concrete edits.
+    pub fn resolve_action(
+        &mut self,
+        action: &CodeAction,
+        budget: Duration,
+    ) -> Result<Vec<FileEdits>> {
+        let value = self.request("codeAction/resolve", action.raw.clone(), budget)?;
+        match value.get("edit") {
+            Some(edit) if !edit.is_null() => parse_workspace_edit(edit.clone()),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     pub fn shutdown(&mut self) {
         let _ = self.request("shutdown", Value::Null, Duration::from_secs(5));
         self.notify("exit", Value::Null);
@@ -596,6 +676,31 @@ fn parse_locations(value: Value) -> Result<Vec<Location>> {
             })
         })
         .collect())
+}
+
+fn parse_code_actions(value: Value) -> Vec<CodeAction> {
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let title = item.get("title")?.as_str()?.to_string();
+            // A `Command` has a title but no data, kind or edit; only real
+            // CodeAction literals can be resolved into an edit.
+            if item.get("data").is_none()
+                && item.get("edit").is_none()
+                && item.get("kind").is_none()
+            {
+                return None;
+            }
+            Some(CodeAction {
+                title,
+                kind: item.get("kind").and_then(Value::as_str).map(str::to_string),
+                raw: item.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Apply edits to in-memory text, returning the new text.

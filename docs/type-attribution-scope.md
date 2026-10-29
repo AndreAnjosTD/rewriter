@@ -1,6 +1,6 @@
 # Scope: a type-attribution layer for rustrewrite
 
-Status: phases 1-3 implemented; phases 4-5 not started.
+Status: phases 1-4 implemented; phase 5 not started.
 
 The question this answers: what would it take to make `rustrewrite` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
 
@@ -99,7 +99,7 @@ Non-negotiable details:
 | 1 | LSP client in Rust: JSON-RPC framing, `initialize`, `didOpen`, `rename`, `WorkspaceEdit` application, server shutdown | **Done** — see results below | 3–5 d |
 | 2 | `kind: semantic` step, `--diff`/`--check` support, two flagship recipes (`rust.migrate.change-method-name`, `rust.migrate.change-type`) | **Done** — see results below | 2–3 d |
 | 3 | References-driven call-site rewriting for the argument primitives | **Done** — see results below | 4–6 d |
-| 4 | Assists as recipe sources: enumerate `codeAction` results and expose them by id | One assist runs end-to-end through the recipe model | 3–5 d |
+| 4 | Assists as recipe sources: enumerate `codeAction` results and expose them by id | **Done** — see results below | 3–5 d |
 | 5 | Performance and lifecycle: cache the loaded workspace, `prefill_caches`, skip the server when no semantic step is present | Cold run on NodeHugDesktop under 90 s, warm semantic run under 10 s | 2–3 d |
 
 **MVP is phases 1 and 2: about one week of focused work**, and it delivers the two primitives that carry most of OpenRewrite's value.
@@ -175,6 +175,18 @@ Four things this phase taught:
 4. **Overlapping edits must be refused, not merged.** Two rewrites that touch the same bytes now fail loudly rather than being applied in an order that happens to work.
 
 Verified: on the fixture, deleting argument 0 rewrites the declaration and all three call sites and the crate still builds; the same works through a `self` receiver; adding and reordering both compile. On NodeHugDesktop, reordering a two-parameter test helper finds the declaration and eight call sites in one dry run. Nineteen integration tests across three files, about 38 seconds.
+
+## Phase 4 results
+
+`rust.migrate.assist` runs one of rust-analyzer's built-in assists by title. The analyzer offers about 134 of them, and they were previously unreachable from the recipe model.
+
+The protocol has three traps, all found by probing rather than reading:
+
+1. **CodeAction literals are opt-in.** Without `textDocument.codeAction.codeActionLiteralSupport` in the client capabilities, rust-analyzer returns no assists at all — every position probes empty. This looked exactly like "there are no assists here" until the capability was added.
+2. **Assists arrive without an edit.** They come back with `data` and no `edit`; the edit only exists after a `codeAction/resolve` round trip. Applying what comes back from the first call would silently do nothing.
+3. **Titles are the only handle.** There is no stable assist id in the response, so a recipe names the title (`Inline variable`). When it does not match, the error lists every assist available at that position, which turns a failed lookup into discovery.
+
+Verified: `Inline variable` on `let sum = items.iter().sum::<u32>();` rewrites the function to `items.iter().sum::<u32>() * 2`, the gate passes, and `check` reports the same three edits without writing. A wrong title fails with the available list. Twenty-two integration tests across four files, about 34 seconds.
 
 ## Risks
 

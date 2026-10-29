@@ -104,6 +104,7 @@ pub struct SemanticStep {
     pub order: Option<Vec<usize>>,
     pub argument: Option<String>,
     pub parameter: Option<String>,
+    pub title: Option<String>,
 }
 
 impl Engine {
@@ -188,6 +189,7 @@ impl Engine {
                             order,
                             argument: step.argument.clone(),
                             parameter: step.parameter.clone(),
+                            title: step.title.clone(),
                         });
                     }
                 }

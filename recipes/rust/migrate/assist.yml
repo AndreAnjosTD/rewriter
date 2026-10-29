@@ -1,0 +1,38 @@
+id: rust.migrate.assist
+name: Run a rust-analyzer assist
+description: >-
+  Runs one of rust-analyzer's built-in assists, chosen by title. The analyzer
+  offers roughly 134 assists, from inlining a variable to shortening a fully
+  qualified path, and this recipe puts them behind the same gate as everything
+  else. The assist is resolved into concrete edits, applied, and then compiled.
+  This is the Rust form of OpenRewrite's imperative recipes: an operation only the
+  compiler-backed analysis can perform, exposed through the same recipe model.
+tags: [migrate, semantic, assist]
+risk: medium
+
+options:
+  file:
+    description: Path to the file to run the assist in, relative to the run root.
+    required: true
+  anchor:
+    description: Text on the line to act on, used to find it.
+    required: true
+  from:
+    description: >-
+      The token at that position. The assist is requested over this token, and
+      its length decides the range the analyzer sees.
+    required: true
+  title:
+    description: >-
+      The assist title, as the analyzer reports it, e.g. `Inline variable` or
+      `Promote local to constant`. The error lists what is available when it
+      does not match.
+    required: true
+
+steps:
+  - kind: semantic
+    action: assist
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    title: ${title}

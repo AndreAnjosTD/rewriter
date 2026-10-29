@@ -110,6 +110,18 @@ A `self` receiver occupies parameter slot zero but no argument slot, so the inde
 
 These are OpenRewrite's `DeleteMethodArgument`, `AddLiteralMethodArgument` and `ReorderMethodArguments`, with the matching `AddMethodParameter` and `RemoveMethodParameter` folded in, because Rust has no optional parameters.
 
+### Running the analyzer's own assists
+
+rust-analyzer ships roughly 134 assists — inline a variable, promote a local to a constant, shorten a fully qualified path, add a missing match arm. They are reachable through the same model:
+
+```
+rustrewrite run --recipe rust.migrate.assist \
+  --set file=src/main.rs --set 'anchor=let sum' \
+  --set from=sum --set 'title=Inline variable' --apply
+```
+
+The assist is requested over the token at `from`, matched by title, resolved into concrete edits, applied, and then compiled like any other change. When the title does not match, the error lists every assist the analyzer offers at that position, which is the practical way to discover them.
+
 ## What the gate does
 
 With `--apply`, in order:
@@ -240,6 +252,7 @@ Every recipe that rewrites something should carry at least one `example`.
 | `rust.migrate.delete-argument` | semantic | drop an argument from a call and a parameter from the declaration |
 | `rust.migrate.add-argument` | semantic | insert an argument at every call site and a parameter in the declaration |
 | `rust.migrate.reorder-arguments` | semantic | permute arguments at every call site and parameters in the declaration |
+| `rust.migrate.assist` | semantic | run one of rust-analyzer's built-in assists, chosen by title |
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |

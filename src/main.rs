@@ -622,6 +622,65 @@ fn run_semantic(
                 }
                 edits
             }
+            SemanticAction::Assist => {
+                let title = step
+                    .title
+                    .clone()
+                    .with_context(|| format!("`{}` needs an assist title", step.recipe))?;
+                let end = semantic::char_position(
+                    &text,
+                    line,
+                    character + step.from.chars().count() as u32,
+                    encoding,
+                )
+                .with_context(|| format!("locating the end of `{}`", step.from))?;
+                let actions = server.code_actions(
+                    &path,
+                    semantic::Range {
+                        start: position,
+                        end,
+                    },
+                    budget,
+                )?;
+                if actions.is_empty() {
+                    bail!(
+                        "rust-analyzer offers no assists at `{}` in {}",
+                        step.from,
+                        step.file.display()
+                    );
+                }
+                let wanted = title.to_lowercase();
+                let chosen = actions
+                    .iter()
+                    .find(|action| action.title.eq_ignore_ascii_case(&title))
+                    .or_else(|| {
+                        actions
+                            .iter()
+                            .find(|action| action.title.to_lowercase().contains(&wanted))
+                    })
+                    .with_context(|| {
+                        format!(
+                            "`{}` is not offered here. Available: {}",
+                            title,
+                            actions
+                                .iter()
+                                .map(|action| match &action.kind {
+                                    Some(kind) => format!("`{}` ({kind})", action.title),
+                                    None => format!("`{}`", action.title),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                let edits = server.resolve_action(chosen, budget)?;
+                if edits.is_empty() {
+                    bail!(
+                        "the `{}` assist produced no edits; nothing was written",
+                        chosen.title
+                    );
+                }
+                edits
+            }
             _ => {
                 let op = argument_op(step)?;
                 let rewrites = plan_argument_rewrites(
@@ -651,12 +710,22 @@ fn run_semantic(
                 .with_context(|| format!("reading {}", file_edits.path.display()))?;
             let updated = semantic::apply_edits(&current, &file_edits.edits, encoding)?;
             for edit in &file_edits.edits {
+                // Report the text actually replaced, not the token we anchored
+                // on: an assist can rewrite several unrelated spans.
+                let replaced = semantic::position_to_offset(&current, edit.range.start, encoding)
+                    .zip(semantic::position_to_offset(
+                        &current,
+                        edit.range.end,
+                        encoding,
+                    ))
+                    .map(|(start, end)| current[start..end].to_string())
+                    .unwrap_or_else(|| step.from.clone());
                 outcome.findings.push(Finding {
                     recipe: step.recipe.clone(),
                     path: file_edits.path.clone(),
                     line: edit.range.start.line as usize + 1,
                     column: edit.range.start.character as usize + 1,
-                    before: step.from.clone(),
+                    before: replaced,
                     after: Some(edit.new_text.clone()),
                     message: String::new(),
                 });
@@ -700,6 +769,7 @@ fn argument_op(step: &SemanticStep) -> Result<callsites::Op> {
                 .with_context(|| format!("`{}` needs an order", step.recipe))?,
         }),
         SemanticAction::Rename => unreachable!("rename is handled separately"),
+        SemanticAction::Assist => unreachable!("assist is handled separately"),
     }
 }
 

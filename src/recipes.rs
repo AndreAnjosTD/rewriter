@@ -62,6 +62,8 @@ pub enum SemanticAction {
     DeleteArgument,
     AddArgument,
     ReorderArguments,
+    /// Run one of rust-analyzer's built-in assists, chosen by title.
+    Assist,
 }
 
 /// A recipe parameter, the equivalent of OpenRewrite's `@Option`.
@@ -121,6 +123,8 @@ pub struct Step {
     pub argument: Option<String>,
     /// The parameter written into the declaration by `add-argument`, e.g. `retries: u32`.
     pub parameter: Option<String>,
+    /// The assist title to run, e.g. `Inline variable`.
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -296,6 +300,9 @@ impl Catalog {
                             "recipe `{}` has a reorder-arguments step without `order`",
                             recipe.id
                         ),
+                        SemanticAction::Assist if step.title.is_none() => {
+                            bail!("recipe `{}` has an assist step without `title`", recipe.id)
+                        }
                         _ => {}
                     }
                 }
@@ -493,6 +500,7 @@ pub fn apply_options(resolved: &mut Resolved, provided: &BTreeMap<String, String
             &mut raw.order,
             &mut raw.argument,
             &mut raw.parameter,
+            &mut raw.title,
         ]
         .into_iter()
         .flatten()
