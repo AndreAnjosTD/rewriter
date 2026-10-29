@@ -22,18 +22,13 @@ pub enum Mode {
     Scan,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Risk {
+    #[default]
     Low,
     Medium,
     High,
-}
-
-impl Default for Risk {
-    fn default() -> Self {
-        Risk::Low
-    }
 }
 
 impl std::fmt::Display for Risk {

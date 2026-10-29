@@ -176,11 +176,10 @@ fn list(catalog: &Catalog, tag: Option<&str>, sources: bool) -> Result<()> {
             String::new()
         };
         println!(
-            "{:<40} {:<10} risk:{:<7}{}{}{}",
+            "{:<40} {:<10} risk:{:<7}{}{}",
             recipe.id,
             kind,
             recipe.risk.to_string(),
-            "",
             tags,
             source
         );
@@ -490,15 +489,12 @@ fn run_recipes(
     }
 
     let mut cargo_log = Vec::new();
-    if !writes.is_empty() || engine.has_cargo_steps() {
-        if apply {
-            cargo_log = engine.run_cargo_steps(root).map_err(|err| {
-                if let Some(snapshot) = &snapshot {
-                    let _ = snapshot.restore();
-                }
-                err
-            })?;
-        }
+    if (!writes.is_empty() || engine.has_cargo_steps()) && apply {
+        cargo_log = engine.run_cargo_steps(root).inspect_err(|_err| {
+            if let Some(snapshot) = &snapshot {
+                let _ = snapshot.restore();
+            }
+        })?;
     }
 
     if !apply {
@@ -513,11 +509,15 @@ fn run_recipes(
     }
 
     println!();
-    println!(
-        "applied {} change(s) across {} file(s) for {selector}",
-        findings.len(),
-        writes.len()
-    );
+    if writes.is_empty() {
+        println!("no structural changes; cargo steps ran for {selector}");
+    } else {
+        println!(
+            "applied {} change(s) across {} file(s) for {selector}",
+            findings.len(),
+            writes.len()
+        );
+    }
     for line in cargo_log {
         println!("  {line}");
     }

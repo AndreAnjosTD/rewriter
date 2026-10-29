@@ -1,0 +1,155 @@
+# rustrewrite
+
+Recipe-driven, verified refactoring for Rust: the OpenRewrite idea, built for a language that has no LST.
+
+You describe a rewrite once as a recipe. The tool finds every match across the codebase, applies the rewrite, then compiles the result and puts everything back if the build breaks.
+A rewrite that does not compile is not a rewrite, it is a broken build, and `rustrewrite` refuses to leave one behind.
+
+```
+rustrewrite check --recipe rust.idioms          # what would change, and where
+rustrewrite run   --recipe rust.idioms --apply  # change it, then prove it still builds
+rustrewrite run   --recipe rust.idioms --apply --test   # ...and run the tests too
+```
+
+## Install
+
+```
+cargo install --path .
+```
+
+The binary is self-contained: the recipe catalog is compiled into it.
+
+## How it maps onto OpenRewrite
+
+| OpenRewrite | rustrewrite |
+| --- | --- |
+| Recipe | a YAML file with an id, tags, risk class and steps |
+| Declarative recipe | `steps:` of structural rules, no code required |
+| Composite recipe | `recipes:` naming other recipe ids |
+| `RecipeRun` / dry run | `check` |
+| `RewriteRun` | `run --apply` |
+| Scan recipe | `mode: scan`, reports without writing |
+| LST | tree-sitter parse of the file, edited in place so formatting and comments survive |
+| Recipe tests | `examples:` per recipe, executed by `rustrewrite test` |
+
+The one deliberate difference: OpenRewrite trusts type attribution, which is why its Java recipes can rename a type across a codebase.
+tree-sitter has no types, so every Rust recipe is scoped to what the syntax proves, and the compile gate is what catches the rest.
+That trade is why the gate is mandatory rather than optional.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `list [--tag T]` | The catalog. |
+| `explain <recipe>` | One recipe, with its examples executed as a live proof. |
+| `test` | Run every recipe example. Use this before trusting a new recipe. |
+| `check [--recipe R] [--diff] [--json]` | Report findings. Exits 1 if there are any, so CI can hold the line. Never writes. |
+| `run [--recipe R] [--apply] [--test] [--diff]` | Apply a recipe, then gate it. Without `--apply` it is a dry run. |
+| `verify [--test]` | The gate on its own: format, compile, optionally test. |
+
+`--recipe` accepts an id, a namespace prefix (`rust.idiom` selects the whole pack), or `all`.
+
+## What the gate does
+
+With `--apply`, in order:
+
+1. Refuses to run on a dirty git tree unless you pass `--allow-dirty`.
+2. Snapshots every `.rs` file.
+3. Applies the structural steps in memory, writes only files that actually changed.
+4. Runs cargo-backed steps (compiler and clippy fixes) on the real tree.
+5. Runs `cargo fmt --all`, then `cargo check --all-targets`, then `cargo test --all-targets` if you asked for it.
+6. On any failure: restores every snapshot, removes any file the run created, and exits non-zero with the failing output.
+
+A failed gate means the recipe is wrong, not that the code is wrong.
+
+## Writing a recipe
+
+A recipe is a YAML file. The catalog lives in `recipes/`, and a project can add its own under `.rustrewrite/recipes/` (loaded automatically) or any directory passed with `--recipes`.
+
+```yaml
+id: rust.idiom.string-len-zero
+name: Use is_empty() instead of comparing len() to zero
+description: >-
+  `len() == 0` predates the is_empty convention.
+tags: [idiom, std]
+risk: low
+
+steps:
+  - rule:
+      pattern: $X.len() == 0
+    fix: $X.is_empty()
+
+examples:
+  - before: if items.len() == 0 { return; }
+    after: if items.is_empty() { return; }
+    why: The empty case becomes the method that names it.
+```
+
+The `rule` object is an [ast-grep rule](https://ast-grep.github.io/reference/rule.html), passed through verbatim: `pattern`, `kind`, `all`/`any`/`not`, `inside`, `has`, `constraints` and `utils` all work.
+`fix` is a template where `$VAR` and `$$$` metavariables bound by the rule are substituted.
+
+Step options:
+
+```yaml
+- rule: { pattern: extern crate $NAME; }
+  delete: true            # remove the whole line when the match is alone on it
+- rule: { pattern: $X.unwrap() }
+  message: unwrap() panics on None/Err   # shown by scan recipes
+  exclude: ["**/tests/**"]               # path globs, relative to the run root
+```
+
+A composite recipe names other recipes and runs them in order:
+
+```yaml
+id: rust.idioms
+recipes:
+  - rust.idiom.string-len-zero
+  - rust.idiom.bool-compare
+```
+
+A `cargo` step puts a compiler or clippy fixer behind the same gate:
+
+```yaml
+steps:
+  - kind: cargo
+    command: ["cargo", "clippy", "--fix", "--all-targets", "--allow-dirty", "--allow-staged"]
+```
+
+Every recipe that rewrites something should carry at least one `example`.
+`rustrewrite test` runs them all, so a recipe that silently stops matching fails the build rather than quietly doing nothing.
+
+## The catalog
+
+| Recipe | Kind | What it does |
+| --- | --- | --- |
+| `rust.idiom.string-len-zero` | fix | `.len() == 0` becomes `.is_empty()` |
+| `rust.idiom.bool-compare` | fix | `x == true` becomes `x` |
+| `rust.idiom.string-from-empty` | fix | `String::from("")` becomes `String::new()` |
+| `rust.idiom.iter-nth-zero` | fix | `.nth(0)` becomes `.next()` |
+| `rust.idioms` | composite | the idiom pack in one pass |
+| `rust.modernize.extern-crate` | fix | drops redundant `extern crate` declarations |
+| `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
+| `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
+| `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |
+| `rust.cleanup` | composite | idiom pack, then compiler suggestions |
+| `rust.scan.unwrap` | scan | `unwrap()` outside `tests/` |
+| `rust.scan.mem-uninitialized` | scan | deprecated `mem::uninitialized` |
+
+Read-only recipes exist on purpose: `unwrap` is correct in a main, a prototype, or a test.
+The decision belongs to the reviewer, so the tool reports it and writes nothing.
+
+## Known limits
+
+- **Type position is not matchable with `pattern`.** `&Vec<$T>` does not parse as an expression, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Recipes that rename a type need the cargo-backed path or a contribution to the engine.
+- **No type information.** Nothing that needs to know whether an identifier is a trait, a module or a struct can be decided structurally. Those recipes belong in `mode: scan`.
+- **The gate needs the crate to compile before you start.** A pre-broken tree fails at the gate and rolls back, which is correct but unsurprising.
+- **`cargo fmt` rewrites formatting after a fix.** Replacements are syntactically correct but not always layout-correct; the formatter is the last mile.
+
+## Development
+
+```
+cargo test      # recipe examples plus end-to-end CLI tests against a fixture crate
+cargo run -- list
+```
+
+The integration tests copy `tests/fixtures/demo-crate` to a temp directory for each case, so nothing is shared and nothing in the repo is touched.
