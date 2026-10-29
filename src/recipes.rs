@@ -64,6 +64,8 @@ pub enum SemanticAction {
     ReorderArguments,
     /// Run one of rust-analyzer's built-in assists, chosen by title.
     Assist,
+    /// Replace the declared return type of a resolved function.
+    ChangeReturnType,
 }
 
 /// A recipe parameter, the equivalent of OpenRewrite's `@Option`.
@@ -302,6 +304,15 @@ impl Catalog {
                         ),
                         SemanticAction::Assist if step.title.is_none() => {
                             bail!("recipe `{}` has an assist step without `title`", recipe.id)
+                        }
+                        SemanticAction::ChangeReturnType
+                            if step.to.as_deref().is_none_or(|to| to.trim().is_empty()) =>
+                        {
+                            bail!(
+                                "recipe `{}` has a change-return-type step without a non-empty \
+                                 `to`",
+                                recipe.id
+                            )
                         }
                         _ => {}
                     }

@@ -1,0 +1,37 @@
+id: rust.migrate.rename-symbol
+name: Rename a resolved symbol
+description: >-
+  Renames one constant, static, field or function and every reference the
+  compiler resolves to it. This is the recipe form of `rustrewrite rename`, which
+  is what makes a resolved rename composable with other steps. Because the symbol
+  is resolved rather than matched by name, an identically named item on another
+  type is a different symbol and is left alone. This covers OpenRewrite's
+  ReplaceConstantWithAnotherConstant when the migration is a rename: the old name
+  becomes the new one at its declaration and everywhere it is used.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the symbol, relative to the run root.
+    required: true
+  anchor:
+    description: >-
+      Text on the declaration line, used to find it. For example
+      `pub const MAX: u32 = 100` or `fn start(&self)`. An anchor survives edits
+      above it; a line number does not.
+    required: true
+  from:
+    description: The symbol's current name.
+    required: true
+  to:
+    description: The new name.
+    required: true
+
+steps:
+  - kind: semantic
+    action: rename
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    to: ${to}

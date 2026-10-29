@@ -9,6 +9,7 @@ mod daemon;
 mod engine;
 mod recipes;
 mod semantic;
+mod signature;
 mod util;
 mod verify;
 
@@ -618,6 +619,18 @@ struct SemanticOutcome {
     writes: Vec<(PathBuf, String, String)>,
 }
 
+impl SemanticOutcome {
+    /// Keep one pending write per file. Two steps over the same file should show
+    /// one diff from the original text, not two overlapping ones.
+    fn record(&mut self, path: PathBuf, before: String, after: String) {
+        match self.writes.iter_mut().find(|(known, _, _)| *known == path) {
+            Some(entry) => entry.2 = after,
+            None if before != after => self.writes.push((path, before, after)),
+            None => {}
+        }
+    }
+}
+
 /// How a command should talk to the analyzer.
 #[derive(Debug, Clone, Copy)]
 struct AnalyzerOpts {
@@ -660,26 +673,66 @@ fn run_semantic(
         return Ok(outcome);
     }
 
-    let mut server = analyzer(root, opts)?;
-    let encoding = server.encoding();
-    let budget = std::time::Duration::from_secs(opts.wait);
+    // A change-return-type step edits the declaration without asking the server
+    // anything, so the server starts only when a step actually needs it. Pending
+    // text lives here until it is written, so a dry run composes the same way an
+    // applied one does.
+    let mut session: Option<Box<dyn Analyzer>> = None;
+    let mut overlay: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut opened: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut ready = false;
+    let budget = std::time::Duration::from_secs(opts.wait);
 
     for step in steps {
         let path = util::normalize_path(&root.join(&step.file))?;
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let (line, character) = locate_symbol(&text, step, &path)?;
+        let text = read_source(&overlay, &path)?;
+        let (offset, line, character) = locate_token(&text, step, &path)?;
+
+        if step.action == SemanticAction::ChangeReturnType {
+            let edit = signature::set_return_type(&text, offset, &step.from, &step.to)
+                .with_context(|| {
+                    format!(
+                        "changing the return type of `{}` in {}",
+                        step.from,
+                        step.file.display()
+                    )
+                })?;
+            let mut updated = text.clone();
+            updated.replace_range(edit.range.clone(), &edit.replacement);
+            if updated == text {
+                continue;
+            }
+            let (found_line, found_column) = line_column(&text, edit.range.start);
+            outcome.findings.push(Finding {
+                recipe: step.recipe.clone(),
+                path: path.clone(),
+                line: found_line,
+                column: found_column,
+                before: edit.previous,
+                after: Some(step.to.trim().to_string()),
+                message: String::new(),
+            });
+            if write {
+                std::fs::write(&path, &updated)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            }
+            if let Some(server) = session.as_mut() {
+                open_or_refresh(server.as_mut(), &mut opened, &path, &updated)?;
+            }
+            overlay.insert(path.clone(), updated.clone());
+            outcome.record(path, text, updated);
+            continue;
+        }
+
+        if session.is_none() {
+            session = Some(analyzer(root, opts)?);
+        }
+        let server = session.as_mut().expect("started above");
+        let encoding = server.encoding();
         let position = semantic::char_position(&text, line, character, encoding)
             .with_context(|| format!("locating `{}` in {}", step.from, path.display()))?;
 
-        if opened.contains(&path) {
-            server.refresh(&path, &text)?;
-        } else {
-            server.did_open(&path, &text)?;
-            opened.insert(path.clone());
-        }
+        open_or_refresh(server.as_mut(), &mut opened, &path, &text)?;
         if !ready {
             ready = server.wait_ready(budget);
         }
@@ -757,6 +810,7 @@ fn run_semantic(
                 }
                 edits
             }
+            SemanticAction::ChangeReturnType => unreachable!("handled above"),
             _ => {
                 let op = argument_op(step)?;
                 let rewrites = plan_argument_rewrites(
@@ -768,6 +822,7 @@ fn run_semantic(
                     position,
                     encoding,
                     budget,
+                    &overlay,
                 )?;
                 apply_rewrites(
                     server.as_mut(),
@@ -775,6 +830,7 @@ fn run_semantic(
                     &step.recipe,
                     rewrites,
                     write,
+                    &mut overlay,
                     &mut outcome,
                 )?;
                 continue;
@@ -782,8 +838,7 @@ fn run_semantic(
         };
 
         for file_edits in &edits {
-            let current = std::fs::read_to_string(&file_edits.path)
-                .with_context(|| format!("reading {}", file_edits.path.display()))?;
+            let current = read_source(&overlay, &file_edits.path)?;
             let updated = semantic::apply_edits(&current, &file_edits.edits, encoding)?;
             for edit in &file_edits.edits {
                 // Report the text actually replaced, not the token we anchored
@@ -809,17 +864,45 @@ fn run_semantic(
             if write {
                 std::fs::write(&file_edits.path, &updated)
                     .with_context(|| format!("writing {}", file_edits.path.display()))?;
-                server.refresh(&file_edits.path, &updated)?;
-                opened.insert(file_edits.path.clone());
             }
-            outcome
-                .writes
-                .push((file_edits.path.clone(), current, updated));
+            open_or_refresh(server.as_mut(), &mut opened, &file_edits.path, &updated)?;
+            overlay.insert(file_edits.path.clone(), updated.clone());
+            outcome.record(file_edits.path.clone(), current, updated);
         }
     }
 
-    server.shutdown();
+    if let Some(mut server) = session {
+        server.shutdown();
+    }
     Ok(outcome)
+}
+
+/// The file as this run currently sees it: pending text wins over disk so that
+/// one semantic step resolves against what the previous one did.
+fn read_source(overlay: &BTreeMap<PathBuf, String>, path: &Path) -> Result<String> {
+    match overlay.get(path) {
+        Some(text) => Ok(text.clone()),
+        None => {
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+        }
+    }
+}
+
+/// Keep the server's copy of an open document in step with the text this run is
+/// working on, whether or not that text has reached disk yet.
+fn open_or_refresh(
+    server: &mut dyn Analyzer,
+    opened: &mut std::collections::HashSet<PathBuf>,
+    path: &Path,
+    text: &str,
+) -> Result<()> {
+    if opened.contains(path) {
+        server.refresh(path, text)
+    } else {
+        server.did_open(path, text)?;
+        opened.insert(path.to_path_buf());
+        Ok(())
+    }
 }
 
 fn argument_op(step: &SemanticStep) -> Result<callsites::Op> {
@@ -846,6 +929,9 @@ fn argument_op(step: &SemanticStep) -> Result<callsites::Op> {
         }),
         SemanticAction::Rename => unreachable!("rename is handled separately"),
         SemanticAction::Assist => unreachable!("assist is handled separately"),
+        SemanticAction::ChangeReturnType => {
+            unreachable!("change-return-type is handled separately")
+        }
     }
 }
 
@@ -861,6 +947,7 @@ fn plan_argument_rewrites(
     position: semantic::Position,
     encoding: semantic::PositionEncoding,
     budget: std::time::Duration,
+    overlay: &BTreeMap<PathBuf, String>,
 ) -> Result<Vec<(PathBuf, std::ops::Range<usize>, String)>> {
     let offset = semantic::position_to_offset(decl_text, position, encoding)
         .with_context(|| format!("locating `{}` in {}", step.from, decl_path.display()))?;
@@ -919,7 +1006,7 @@ fn plan_argument_rewrites(
         );
     }
 
-    let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut texts: BTreeMap<PathBuf, String> = overlay.clone();
     texts.insert(decl_path.to_path_buf(), decl_text.to_string());
     let mut skipped = 0usize;
 
@@ -927,8 +1014,7 @@ fn plan_argument_rewrites(
         let text = match texts.get(&reference.path) {
             Some(text) => text.clone(),
             None => {
-                let text = std::fs::read_to_string(&reference.path)
-                    .with_context(|| format!("reading {}", reference.path.display()))?;
+                let text = read_source(overlay, &reference.path)?;
                 texts.insert(reference.path.clone(), text.clone());
                 text
             }
@@ -973,6 +1059,7 @@ fn apply_rewrites(
     recipe: &str,
     rewrites: Vec<(PathBuf, std::ops::Range<usize>, String)>,
     write: bool,
+    overlay: &mut BTreeMap<PathBuf, String>,
     outcome: &mut SemanticOutcome,
 ) -> Result<()> {
     let mut by_file: BTreeMap<PathBuf, Vec<(std::ops::Range<usize>, String)>> = BTreeMap::new();
@@ -981,8 +1068,7 @@ fn apply_rewrites(
     }
 
     for (path, mut edits) in by_file {
-        let original = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let original = read_source(overlay, &path)?;
         edits.sort_by_key(|(range, _)| range.start);
         for pair in edits.windows(2) {
             if pair[0].0.end > pair[1].0.start {
@@ -1013,10 +1099,10 @@ fn apply_rewrites(
             if write {
                 std::fs::write(&path, &updated)
                     .with_context(|| format!("writing {}", path.display()))?;
-                server.refresh(&path, &updated)?;
-                opened.insert(path.clone());
             }
-            outcome.writes.push((path, original, updated));
+            open_or_refresh(server, opened, &path, &updated)?;
+            overlay.insert(path.clone(), updated.clone());
+            outcome.record(path, original, updated);
         }
     }
     Ok(())
@@ -1034,8 +1120,10 @@ fn line_column(text: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
-/// Find the identifier to rename, by anchor text or by line number.
-fn locate_symbol(text: &str, step: &SemanticStep, path: &Path) -> Result<(u32, u32)> {
+/// Find the token to act on, by anchor text or by line number. Returns its byte
+/// offset plus its 0-based line and character column: the server wants the
+/// position, and the return-type edit wants the offset.
+fn locate_token(text: &str, step: &SemanticStep, path: &Path) -> Result<(usize, u32, u32)> {
     let (line_index, line) = if let Some(anchor) = &step.anchor {
         let index = text
             .lines()
@@ -1068,7 +1156,26 @@ fn locate_symbol(text: &str, step: &SemanticStep, path: &Path) -> Result<(u32, u
             path.display()
         )
     })?;
-    Ok((line_index as u32, line[..byte].chars().count() as u32))
+    let start = line_start(text, line_index).with_context(|| {
+        format!(
+            "line {} is past the end of {}",
+            line_index + 1,
+            path.display()
+        )
+    })?;
+    Ok((
+        start + byte,
+        line_index as u32,
+        line[..byte].chars().count() as u32,
+    ))
+}
+
+fn line_start(text: &str, index: usize) -> Option<usize> {
+    let mut start = 0usize;
+    for _ in 0..index {
+        start += text[start..].find('\n')? + 1;
+    }
+    Some(start)
 }
 
 #[allow(clippy::too_many_arguments)]

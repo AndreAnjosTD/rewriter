@@ -32,8 +32,7 @@ The binary is self-contained: the recipe catalog is compiled into it.
 | LST | tree-sitter parse of the file, edited in place so formatting and comments survive |
 | Recipe tests | `examples:` per recipe, executed by `rustrewrite test` |
 
-The one deliberate difference: OpenRewrite trusts type attribution, which is why its Java recipes can rename a type across a codebase.
-tree-sitter has no types, so every Rust recipe is scoped to what the syntax proves, and the compile gate is what catches the rest.
+The one deliberate difference: OpenRewrite assumes type attribution everywhere. Rust recipes here are either syntax-scoped, where tree-sitter proves the match, or analyzer-backed, where rust-analyzer resolves the symbol. The compile gate catches what neither proves.
 That trade is why the gate is mandatory rather than optional.
 
 ## Commands
@@ -110,6 +109,30 @@ rustrewrite run --recipe rust.migrate.change-type \
 `anchor` is text on the declaration line. It replaces a line number because any edit above the declaration moves a line number, and an anchor does not.
 
 These are the Rust forms of OpenRewrite's `ChangeMethodName` and `ChangeType`: one reusable primitive, configured per call, rather than a hand-written recipe per migration.
+
+### Renaming any resolved symbol
+
+`rust.migrate.rename-symbol` is the recipe form of `rename --at`, so a resolved rename can compose with other steps:
+
+```
+rustrewrite run --recipe rust.migrate.rename-symbol \
+  --set file=src/limits.rs --set 'anchor=pub const MAX: u32 = 100' \
+  --set from=MAX --set to=CEILING --apply
+```
+
+It works for constants, statics, fields and functions. Because the analyzer resolves the symbol, a `Config::MAX` on another type is a different symbol and keeps its name, which no text replacement can promise. It is the Rust form of `ReplaceConstantWithAnotherConstant` when the migration is a rename: the old name becomes the new one at its declaration and everywhere it is used.
+
+### Changing a return type
+
+```
+rustrewrite run --recipe rust.migrate.change-return-type \
+  --set file=src/version.rs --set 'anchor=fn major(&self) -> u8' \
+  --set from=major --set to=u64 --apply
+```
+
+It edits the declaration exactly: an existing `-> Old` is replaced in place, and a signature with no arrow gets one inserted before the body or the `where` clause. Multi-line return types, generics and `where` clauses keep their place.
+
+Call sites are deliberately not rewritten. Widening a return type is only safe where the compiler says it is, and the way to find that out is to compile: if any caller relied on the old type, the correctness gate rolls the whole run back and the recipe reports a failed run. That is the correct outcome, not a hidden failure. A recipe that guessed at caller fixes would be a recipe that silently changes behaviour.
 
 ### Rewriting call sites
 
@@ -269,7 +292,9 @@ Every recipe that rewrites something should carry at least one `example`.
 | `rust.modernize.legacy-numeric-constants` | fix | `std::i32::MAX` becomes `i32::MAX` |
 | `rust.modernize` | composite | edition-2018 mechanical migration |
 | `rust.migrate.change-method-name` | semantic | rename a resolved method and its true call sites |
+| `rust.migrate.rename-symbol` | semantic | rename a resolved constant, static, field or function |
 | `rust.migrate.change-type` | semantic | rename a resolved type and every reference |
+| `rust.migrate.change-return-type` | semantic | replace a function's declared return type |
 | `rust.migrate.delete-argument` | semantic | drop an argument from a call and a parameter from the declaration |
 | `rust.migrate.add-argument` | semantic | insert an argument at every call site and a parameter in the declaration |
 | `rust.migrate.reorder-arguments` | semantic | permute arguments at every call site and parameters in the declaration |
@@ -289,13 +314,14 @@ The decision belongs to the reviewer, so the tool reports it and writes nothing.
 
 [`docs/openrewrite-mapping.md`](docs/openrewrite-mapping.md) audits the full OpenRewrite catalog against Rust and records which recipes transfer, which need type information, and which were attempted and rejected.
 
-[`docs/type-attribution-scope.md`](docs/type-attribution-scope.md) scopes the type-aware layer that would unlock the recipes needing type information, with measured numbers for each architecture option.
+[`docs/type-attribution-scope.md`](docs/type-attribution-scope.md) records how the type-aware layer was built and measured, with numbers for each architecture option that was tried.
 
 ## Known limits
 
-- **Structural recipes are syntax-only.** A `pattern` in type position does not parse, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Use `rename` when a change must be type-exact.
-- **`rename` is positional, not a recipe.** It renames one symbol at one location. Recipes that drive it are the next phase; see [`docs/type-attribution-scope.md`](docs/type-attribution-scope.md).
-- **No type information.** Nothing that needs to know whether an identifier is a trait, a module or a struct can be decided structurally. Those recipes belong in `mode: scan`.
+- **Structural recipes are syntax-only.** A `pattern` in type position does not parse, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Use an analyzer-backed recipe when a change must be type-exact.
+- **Syntax alone cannot resolve a symbol.** Nothing that needs to know whether an identifier is a trait, a module or a struct can be decided structurally. Use the `rust.migrate.*` recipes that ask rust-analyzer; they are slower because they load the workspace.
+- **`change-return-type` does not rewrite call sites.** It edits the declaration only. A caller that relied on the old type makes the gate fail the whole run and roll back, which is the intended outcome rather than a bug. Update the caller by hand and re-run.
+- **Resolved renames do not reach inside macro invocations.** rust-analyzer omits edits for tokens inside a macro call such as `println!`. Keep the renamed use outside the macro or update it by hand; the gate catches the breakage.
 - **The gate needs the crate to compile before you start.** A pre-broken tree fails at the gate and rolls back, which is correct but unsurprising.
 - **`cargo fmt` rewrites formatting after a fix.** Replacements are syntactically correct but not always layout-correct; the formatter is the last mile.
 
