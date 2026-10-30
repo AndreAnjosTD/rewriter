@@ -7,7 +7,7 @@ struct Config {
 
 fn collect(items: &[u32]) -> u32 {
     let mut total = 0;
-    if items.len() == 0 {
+    if items.is_empty() {
         return total;
     }
     for item in items {
@@ -17,11 +17,11 @@ fn collect(items: &[u32]) -> u32 {
 }
 
 fn describe(ready: bool, name: &str) -> String {
-    let mut label = String::from("");
-    if ready == true {
+    let mut label = String::new();
+    if ready {
         label = format!("{name} is ready");
     }
-    if ready == false {
+    if !ready {
         label = format!("{name} is waiting");
     }
     label
@@ -29,9 +29,9 @@ fn describe(ready: bool, name: &str) -> String {
 
 fn first_word(text: &str) -> Option<&str> {
     let mut words = text.split_whitespace();
-    let first = words.nth(0);
+    let first = words.next();
     match first {
-        Some(word) if word.len() != 0 => Some(word),
+        Some(word) if !word.is_empty() => Some(word),
         _ => None,
     }
 }
