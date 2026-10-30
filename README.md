@@ -389,8 +389,40 @@ It does not duplicate an import already present in any form: the duplicate check
 An alias counts by the name it binds, so `use a::Bar as Baz` covers `Baz` and not `Bar`.
 A glob import does not count, because it does not name the item.
 
-Each changed file produces one finding. Since an insertion replaces nothing, that finding's `before` is empty and its `after` is the inserted text.
-Neither recipe runs from a bare `all`: the header recipe is marked opt-in, because which license a project carries is a policy decision, and the import recipe needs `--set path`.
+An `insert` step has four placements. `top` and `after-uses` are file-level and produce one finding per changed file. `before-match` and `after-match` place the text relative to every node a `rule` selects, and produce one finding per insertion:
+
+```yaml
+steps:
+  - kind: insert
+    where: before-match
+    rule:
+      pattern: "fn start(&self) { $$$BODY }"
+    text: "// TODO: document this method"
+```
+
+`before-match` writes on the line directly above the matched node and `after-match` on the line directly below its end.
+The text takes the indentation of the line the node starts on, so a comment above a method keeps the `impl` block's depth, and a multi-line `text` is indented line by line.
+`before-match` lands directly above the node itself, not above the doc comments or attributes that belong to it.
+For both node-relative placements the finding carries the inserted line and column, so a caller sees every comment that was added.
+
+Idempotency is per match for those placements: the step compares the first line of `text` (trimmed), or `unless` when it is given, with the lines directly above or below the node.
+A node that already carries the comment is left alone while the other matches still receive theirs, so a second run changes nothing.
+
+`rust.migrate.add-comment-to-method` writes a documentation or TODO comment above every function its `pattern` selects, the Rust form of OpenRewrite's `AddCommentToMethod`.
+The value is a function header such as `fn start(&self)` or `fn $NAME(&self)`; the recipe adds the body wildcard `{ $$$BODY }`, so the body is not part of the selection.
+`rust.migrate.add-comment-to-import` is the same placement for `use` declarations and the Rust form of `AddCommentToImport`.
+A metavariable pattern annotates a group in one run:
+
+```
+rustrewrite run --recipe rust.migrate.add-comment-to-method \
+  --set 'pattern=fn $NAME(&self)' --set 'comment=// TODO: document' --apply
+
+rustrewrite run --recipe rust.migrate.add-comment-to-import \
+  --set 'pattern=use std::$NAME;' --set 'comment=// Legacy std imports.' --apply
+```
+
+Since an insertion replaces nothing, its finding's `before` is empty and its `after` is the text written, indentation included.
+Neither file-level recipe runs from a bare `all`: the header recipe is marked opt-in, because which license a project carries is a policy decision, and the import recipe needs `--set path`.
 
 An example of a recipe that declares options carries the values it needs, so `test` and `explain` exercise the real substitution instead of a `${name}` placeholder:
 
@@ -433,6 +465,8 @@ examples:
 | `rust.migrate.log-to-tracing` | fix | `log::level!` becomes `tracing::level!` |
 | `rust.migrate.add-license-header` | insert | writes a `//` license header above `src/**` files that lack it |
 | `rust.migrate.add-import` | insert | adds a missing `use` after the last import, without duplicating one |
+| `rust.migrate.add-comment-to-method` | insert | writes a comment above every function a pattern selects |
+| `rust.migrate.add-comment-to-import` | insert | writes a comment above every matching `use` declaration |
 | `rust.migrate.replace-string-literal` | fix | a string literal's exact value, plain or raw, becomes another value |
 | `rust.migrate.string-literal-to-constant` | fix | a string literal becomes an existing constant expression |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |

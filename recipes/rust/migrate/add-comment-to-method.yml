@@ -1,0 +1,57 @@
+id: rust.migrate.add-comment-to-method
+name: Add a comment above matching functions
+description: >-
+  Writes `comment` immediately above every function selected by `pattern`, the
+  Rust form of OpenRewrite's AddCommentToMethod. The comment takes the
+  indentation of the line the function starts on, so a method inside an `impl`
+  block is indented with the block, and a multi-line comment is indented line
+  by line. A node that already has the comment above it is skipped while other
+  matches still get theirs, so a second run changes nothing. The comment lands
+  directly above the function itself, not above its doc comments or
+  attributes.
+tags: [migrate, comment]
+risk: low
+
+options:
+  pattern:
+    description: >-
+      The function header to select, for example `fn start(&self)`. The recipe
+      adds `{ $$$BODY }`, so the body is not part of the value and a header
+      without a body matches the whole function. Metavariables are allowed, so
+      `fn $NAME(&self)` selects every method with that receiver. Include a
+      `where` clause in the header when the function has one.
+    required: true
+  comment:
+    description: >-
+      The comment to write, including its markers, for example
+      `// TODO: document why this exists`. A multi-line value is indented one
+      line at a time.
+    required: true
+
+steps:
+  - kind: insert
+    where: before-match
+    rule:
+      pattern: "${pattern} { $$$BODY }"
+    text: "${comment}"
+
+examples:
+  - before: |-
+      struct Job;
+      impl Job {
+          fn start(&self) {
+              run();
+          }
+      }
+    after: |-
+      struct Job;
+      impl Job {
+          // TODO: document why this exists
+          fn start(&self) {
+              run();
+          }
+      }
+    options:
+      pattern: fn start(&self)
+      comment: "// TODO: document why this exists"
+    why: The comment takes the impl block's indentation.

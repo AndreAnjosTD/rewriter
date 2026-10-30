@@ -38,9 +38,9 @@ These are the reusable building blocks — the ones a declarative recipe compose
 
 | Verdict | Count | Recipes |
 | --- | ---: | --- |
-| **Shipped as Rust recipes** | 14 | `ReplaceConstant`, `RemoveMethodInvocations`, `AddImport`, `AddLicenseHeader`, `ReplaceStringLiteralValue`, `ReplaceStringLiteralWithConstant`, plus the eight type-attribution primitives listed below |
+| **Shipped as Rust recipes** | 16 | `ReplaceConstant`, `RemoveMethodInvocations`, `AddImport`, `AddLicenseHeader`, `AddCommentToImport`, `AddCommentToMethod`, `ReplaceStringLiteralValue`, `ReplaceStringLiteralWithConstant`, plus the eight type-attribution primitives listed below |
 | **Covered by another mechanism** | 4 | `OrderImports` → `rustfmt` (on by default); `RemoveUnusedImports` → `cargo fix`; `InlineMethodCalls` and `ShortenFullyQualifiedTypeReferences` → `rust.migrate.assist`, which runs the rust-analyzer assist for each |
-| **Expressible, needs engine work** | 12 | `ChangePackage`, `ChangePackageInStringLiteral`, `ChangeTypeInStringLiteral`, `ChangeMethodAccessLevel`, `NoStaticImport`, `UseStaticImport`, `RemoveAnnotation`, `RemoveAnnotationAttribute`, `ReplaceAnnotation`, `AddCommentToImport`, `AddCommentToMethod`, `AddCommentToMethodInvocations` |
+| **Expressible, needs engine work** | 10 | `ChangePackage`, `ChangePackageInStringLiteral`, `ChangeTypeInStringLiteral`, `ChangeMethodAccessLevel`, `NoStaticImport`, `UseStaticImport`, `RemoveAnnotation`, `RemoveAnnotationAttribute`, `ReplaceAnnotation`, `AddCommentToMethodInvocations` |
 | **Still open, needs type attribution** | 8 | `ChangeMethodTargetToStatic`, `ChangeMethodTargetToVariable`, `ChangeStaticFieldToMethod`, `ChangeAnnotationAttributeName`, `AddOrUpdateAnnotationAttribute`, `AddNullMethodArgument`, `SimplifyMethodChain`, `ReplaceMethodInvocationWithConstant` |
 | **Not applicable** | 7 | `CreateEmptyJavaClass`, `RandomizeId`, `RecipeMarkupDemonstration`, `RemoveMethodThrows`, `RemoveObjectsIsNull`, `UpdateSourcePositions`, `SimplifySingleElementAnnotation` |
 
@@ -125,6 +125,8 @@ Shipped because clippy does not cover them, or because the result reads better t
 | `rust.modernize` | composite | declarative recipe composition |
 | `rust.migrate.add-license-header` | insert | `AddLicenseHeader` |
 | `rust.migrate.add-import` | insert | `AddImport` |
+| `rust.migrate.add-comment-to-import` | insert | `AddCommentToImport` |
+| `rust.migrate.add-comment-to-method` | insert | `AddCommentToMethod` |
 
 ## Recipes that were attempted and rejected
 
@@ -140,5 +142,5 @@ Honesty about the failures is more useful than a longer catalog.
 
 The type-attribution layer and recipe options are shipped; the per-primitive verdicts above record why the last eight type-attribution primitives are not next. What is left:
 
-1. **Comment placement.** `AddImport` and `AddLicenseHeader` shipped on a new `insert` step kind that writes text at the top of a file or after its imports. The three comment recipes (`AddCommentToImport`, `AddCommentToMethod`, `AddCommentToMethodInvocations`) also need to place text relative to a matched node, which this step does not do yet.
+1. **The remaining comment recipe.** `AddCommentToImport` and `AddCommentToMethod` shipped on the `before-match` and `after-match` placements of the `insert` step, which write text above or below every node an ast-grep rule selects and keep the matched line's indentation. `AddCommentToMethodInvocations` is now expressible on the same placement; it is unshipped only because no invocation-selecting recipe has been written yet.
 2. **The remaining string-literal migrations.** `ReplaceStringLiteralValue` and `ReplaceStringLiteralWithConstant` shipped as structural recipes. `ChangePackageInStringLiteral` and `ChangeTypeInStringLiteral` rewrite Java package and type names inside strings; neither has a Rust equivalent, so they stay unbuilt.

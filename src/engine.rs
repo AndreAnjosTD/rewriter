@@ -105,9 +105,22 @@ struct Insert {
     at: InsertWhere,
     /// The text to write, without its trailing newline.
     body: String,
-    /// Presence of this marker means the work is already done.
+    /// Presence of this marker means the work is already done at file scope.
     marker: String,
+    /// The marker checked per match for the two node-relative placements.
+    /// `unless` defaults to the first line of `text`, trimmed, because a
+    /// multi-line block's last line is not a stable thing to look for.
+    match_marker: String,
+    /// The rule selecting nodes for `before-match` and `after-match`.
+    matcher: Option<RuleConfig<SupportLang>>,
     filter: PathFilter,
+}
+
+/// One place an insert step wrote text: the byte offset in the pre-insert text
+/// plus what was actually written there, indentation included.
+struct Insertion {
+    offset: usize,
+    text: String,
 }
 
 pub struct Engine {
@@ -186,6 +199,33 @@ impl Engine {
                         // `text` itself is the natural marker: once written, the
                         // file contains it, so a second run is a no-op.
                         let marker = step.unless.clone().unwrap_or_else(|| body.clone());
+                        // A multi-line block is inserted as one unit, and on a
+                        // second run the line directly above a node is the
+                        // block's last line. The first line is what identifies
+                        // the block from either side.
+                        let match_marker = step.unless.clone().unwrap_or_else(|| {
+                            body.lines().next().unwrap_or_default().trim().to_string()
+                        });
+                        let matcher = match at {
+                            InsertWhere::BeforeMatch | InsertWhere::AfterMatch => {
+                                let rule = step.rule.as_ref().expect("validated at load time");
+                                let message = step
+                                    .message
+                                    .clone()
+                                    .unwrap_or_else(|| resolved_step.name.clone());
+                                Some(
+                                    build_rule(&resolved_step.recipe, &message, rule, None, step)
+                                        .with_context(|| {
+                                        format!(
+                                            "compiling step {} of `{}`",
+                                            index + 1,
+                                            resolved_step.recipe
+                                        )
+                                    })?,
+                                )
+                            }
+                            InsertWhere::Top | InsertWhere::AfterUses => None,
+                        };
                         insert_steps.push(Insert {
                             recipe: resolved_step.recipe.clone(),
                             message: step
@@ -195,6 +235,8 @@ impl Engine {
                             at,
                             body,
                             marker,
+                            match_marker,
+                            matcher,
                             filter: PathFilter::new(&step.include, &step.exclude)?,
                         });
                     }
@@ -352,20 +394,24 @@ impl Engine {
             .iter()
             .filter(|insert| insert.filter.allows(&relative))
         {
-            let Some((next, offset)) = insert.apply(&current) else {
+            let Some((next, insertions)) = insert.apply(&current) else {
                 continue;
             };
-            let (line, column) = line_column(&current, offset);
-            findings.push(Finding {
-                recipe: insert.recipe.clone(),
-                path: path.to_path_buf(),
-                line,
-                column,
-                // Nothing was replaced: `after` carries the text that was added.
-                before: String::new(),
-                after: Some(insert.body.clone()),
-                message: insert.message.clone(),
-            });
+            // Node-relative placements write once per match, so each insertion
+            // is reported: a caller sees every comment that was added.
+            for insertion in &insertions {
+                let (line, column) = line_column(&current, insertion.offset);
+                findings.push(Finding {
+                    recipe: insert.recipe.clone(),
+                    path: path.to_path_buf(),
+                    line,
+                    column,
+                    // Nothing was replaced: `after` carries the text added.
+                    before: String::new(),
+                    after: Some(insertion.text.trim_end_matches(['\n', '\r']).to_string()),
+                    message: insert.message.clone(),
+                });
+            }
             current = next;
         }
 
@@ -405,10 +451,18 @@ impl Engine {
 }
 
 impl Insert {
-    /// Apply this insert to `text`, returning the new text plus the byte offset
-    /// the text was written at. `None` means the file already has what this
-    /// step would add.
-    fn apply(&self, text: &str) -> Option<(String, usize)> {
+    /// Apply this insert to `text`, returning the new text plus every place
+    /// text was written. `None` means the file already has what this step would
+    /// add.
+    fn apply(&self, text: &str) -> Option<(String, Vec<Insertion>)> {
+        match self.at {
+            InsertWhere::BeforeMatch | InsertWhere::AfterMatch => self.apply_match(text),
+            InsertWhere::Top | InsertWhere::AfterUses => self.apply_file(text),
+        }
+    }
+
+    /// File-level placements: one insertion, and one finding per file.
+    fn apply_file(&self, text: &str) -> Option<(String, Vec<Insertion>)> {
         if !self.marker.is_empty() && text.contains(&self.marker) {
             return None;
         }
@@ -433,13 +487,128 @@ impl Insert {
                     None => (text.len(), format!("\n{}\n", self.body)),
                 },
             },
+            InsertWhere::BeforeMatch | InsertWhere::AfterMatch => unreachable!(),
         };
         let mut next = String::with_capacity(text.len() + block.len());
         next.push_str(&text[..offset]);
         next.push_str(&block);
         next.push_str(&text[offset..]);
-        (next != text).then_some((next, offset))
+        (next != text).then_some((
+            next,
+            vec![Insertion {
+                offset,
+                text: block,
+            }],
+        ))
     }
+
+    /// Node-relative placements: the rule selects every node, each match gets
+    /// its own insertion, and a match that already carries the comment above
+    /// (or below) it is skipped so a second run only touches new nodes.
+    fn apply_match(&self, text: &str) -> Option<(String, Vec<Insertion>)> {
+        let matcher = self.matcher.as_ref()?;
+        let marker = self.match_marker.trim();
+        if marker.is_empty() {
+            return None;
+        }
+        let window = self.body.lines().count().max(1);
+        let doc = SupportLang::Rust.ast_grep(text);
+        let mut insertions: Vec<Insertion> = Vec::new();
+        for m in doc.root().find_all(&matcher.matcher) {
+            let range = m.range();
+            if range.end > text.len() {
+                continue;
+            }
+            let line_start = text[..range.start]
+                .rfind('\n')
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            // The indentation of the line the node starts on is the block's
+            // indentation: a method inside an `impl` keeps the block's depth.
+            let indent: String = text[line_start..]
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+            let (offset, leading) = match self.at {
+                InsertWhere::BeforeMatch => (line_start, ""),
+                InsertWhere::AfterMatch => {
+                    let line_end = text[range.end..]
+                        .find('\n')
+                        .map(|index| range.end + index)
+                        .unwrap_or(text.len());
+                    let offset = (line_end + 1).min(text.len());
+                    // A node on the file's last line has no newline to land
+                    // after, so the block supplies one.
+                    let leading = if offset == text.len() && !text.ends_with('\n') {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    (offset, leading)
+                }
+                InsertWhere::Top | InsertWhere::AfterUses => unreachable!(),
+            };
+            let already = match self.at {
+                InsertWhere::BeforeMatch => lines_above(text, offset, window)
+                    .iter()
+                    .any(|line| line.trim() == marker),
+                InsertWhere::AfterMatch => lines_below(text, offset, window)
+                    .iter()
+                    .any(|line| line.trim() == marker),
+                _ => false,
+            };
+            if already {
+                continue;
+            }
+            let block = format!("{leading}{}", indent_block(&self.body, &indent));
+            insertions.push(Insertion {
+                offset,
+                text: block,
+            });
+        }
+        if insertions.is_empty() {
+            return None;
+        }
+        // Two rules can match the same node, or two matches can share a line.
+        // Keep the first insertion at a given offset so the text is written
+        // once, and apply from the end so earlier offsets stay valid.
+        insertions.sort_by_key(|insertion| insertion.offset);
+        insertions.dedup_by_key(|insertion| insertion.offset);
+        let mut next = text.to_string();
+        for insertion in insertions.iter().rev() {
+            next.insert_str(insertion.offset, &insertion.text);
+        }
+        Some((next, insertions))
+    }
+}
+
+/// Indent every non-empty line of `body` with `indent`, and terminate the last
+/// line. Empty lines stay empty so a blank line in a comment block is not
+/// turned into trailing whitespace.
+fn indent_block(body: &str, indent: &str) -> String {
+    let mut block = String::new();
+    for line in body.lines() {
+        if !line.trim().is_empty() {
+            block.push_str(indent);
+            block.push_str(line);
+        }
+        block.push('\n');
+    }
+    block
+}
+
+/// The last `window` complete lines that end at `offset`.
+fn lines_above(text: &str, offset: usize, window: usize) -> Vec<&str> {
+    let before = &text[..offset];
+    let mut lines: Vec<&str> = before.lines().collect();
+    let keep = lines.len().saturating_sub(window);
+    lines.drain(..keep);
+    lines
+}
+
+/// The first `window` complete lines that start at `offset`.
+fn lines_below(text: &str, offset: usize, window: usize) -> Vec<&str> {
+    text[offset..].lines().take(window).collect()
 }
 
 /// The first byte that is not a byte-order mark or shebang: a BOM only means
