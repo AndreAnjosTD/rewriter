@@ -64,11 +64,23 @@ The app needs a `rustrewrite` binary. It looks on `PATH` first; if you run it fr
 
 The window has five working areas:
 
-- **Top bar** — the workspace root, with **Browse…** for a folder picker and **Load catalog** to fetch the recipe list. The search box filters the list, and **Settings** holds the binary path.
-- **Recipe list** — every catalog entry with its id, kind and risk. The search matches the id, name, tags and description.
-- **Detail** — the selected recipe's name, description, tags and options. Required options are marked `*`, and declared defaults are filled in. What you type becomes `--set key=value`.
-- **Actions** — **Check** is the dry run and **Apply** writes and then runs the correctness gate. The toggles map to `--test`, `--no-verify`, `--allow-dirty`, and the warm analyzer (off passes `--cold`). One job runs at a time; **Cancel** kills it.
-- **Results** — a findings table (`file:line`, recipe, `before → after`), the unified diff for the selected file with added and removed lines coloured, the stderr log, and a summary with the counts, whether changes were kept, and every gate result. A failure or an `error` record appears as a red banner.
+- **Top bar** — the workspace root, with **Browse…** for a folder picker and **Load catalog** to fetch the recipe list. The search box filters the list, **Select all shown** checks every recipe the filter currently shows, and **Clear** unchecks them all. **Settings** holds the binary path.
+- **Recipe list** — every catalog entry with its id, kind and risk. The search matches the id, name, tags and description. Each row carries a checkbox and a label: the checkbox decides what the actions run, the label opens that recipe in the detail pane, and neither moves the other. A recipe that declares a required option is tagged `needs --set`, and its checkbox is disabled.
+- **Detail** — the inspected recipe's name, description, tags and options. Required options are marked `*`, and declared defaults are filled in. What you type becomes `--set key=value`.
+- **Actions** — **Check** is the dry run and **Apply** writes and then runs the correctness gate. With several recipes checked the buttons read **Check 3 recipes** / **Apply 3 recipes**, and the run covers all of them. The toggles map to `--test`, `--no-verify`, `--allow-dirty`, and the warm analyzer (off passes `--cold`). One job runs at a time; **Cancel** kills it.
+- **Results** — a findings table (`file:line`, recipe, `before → after`), the unified diff for the selected file with added and removed lines coloured, the stderr log, and a summary naming the selectors that ran, the counts, whether changes were kept, and every gate result. A failure or an `error` record appears as a red banner.
+
+### Selecting several recipes
+
+Checking more than one recipe turns the actions into a batch: the app builds **one** command with one `--recipe` per checked recipe, in catalog order, and the CLI scans once and gates once at the end.
+
+```
+rustrewrite --path <root> run --apply --json --diff --recipe A --recipe B --recipe C
+```
+
+With nothing checked, **Check** and **Apply** act on the inspected recipe exactly as before. With exactly one checked, they act on that recipe. Options belong to a single recipe, so while a batch is checked the option fields are replaced with a note saying so; uncheck back to one recipe and its options return.
+
+A recipe that declares a **required** option cannot join a batch, because every recipe in one invocation shares a single `--set` map and their required option names would collide. Such a recipe is tagged `needs --set` in the list, **Select all shown** skips it, and if one ends up checked anyway the app refuses the batch with a message naming the recipe rather than silently dropping it. Run it on its own instead.
 
 A `check` that reports findings exits non-zero by design; the app treats its summary as a completed check rather than a failure.
 

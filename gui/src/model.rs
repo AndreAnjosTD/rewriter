@@ -59,6 +59,23 @@ impl Recipe {
             .collect()
     }
 
+    /// The names this recipe declares as required, in catalog order. One run
+    /// shares one `--set` map, so a recipe with any of these can only run on
+    /// its own.
+    pub fn required_options(&self) -> Vec<&str> {
+        self.options
+            .iter()
+            .filter(|(_, option)| option.required)
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// Whether the recipe cannot run beside another one because it needs a
+    /// required option of its own.
+    pub fn needs_sets(&self) -> bool {
+        self.options.values().any(|option| option.required)
+    }
+
     /// Whether the search box should keep this recipe. Case-insensitive over
     /// the id, name, tags and description.
     pub fn matches(&self, query: &str) -> bool {
@@ -332,6 +349,28 @@ mod tests {
     fn malformed_json_is_an_error() {
         assert!(parse_record("{not json").is_err());
         assert!(parse_record(r#"{"type":"finding"}"#).is_err());
+    }
+
+    #[test]
+    fn only_required_options_block_a_batch() {
+        let required: Recipe = serde_json::from_str(
+            r#"{"id":"rust.migrate.change-type","name":"Change type","tags":[],"risk":"low","kind":"fix","options":{"file":{"description":"Path.","required":true,"default":null},"header":{"description":"Text.","required":false,"default":"// generated"}}}"#,
+        )
+        .expect("the recipe should parse");
+        let defaults_only: Recipe = serde_json::from_str(
+            r#"{"id":"rust.idioms","name":"Idioms","tags":[],"risk":"low","kind":"fix","options":{"max":{"description":"Limit.","required":false,"default":"10"}}}"#,
+        )
+        .expect("the recipe should parse");
+        let none: Recipe = serde_json::from_str(
+            r#"{"id":"rust.cleanup","name":"Cleanup","tags":[],"risk":"low","kind":"composite","options":{}}"#,
+        )
+        .expect("the recipe should parse");
+
+        assert_eq!(required.required_options(), ["file"]);
+        assert!(required.needs_sets());
+        assert!(defaults_only.required_options().is_empty());
+        assert!(!defaults_only.needs_sets());
+        assert!(!none.needs_sets());
     }
 
     #[test]
