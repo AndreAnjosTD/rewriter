@@ -1,0 +1,22 @@
+id: typescript.scan.ts-ignore
+name: Find @ts-ignore directives
+description: >-
+  Reports `@ts-ignore` comments. `@ts-expect-error` fails the build once the
+  error it suppresses goes away, so it cannot outlive its reason; `@ts-ignore`
+  silently suppresses whatever lands on the next line, including an error it was
+  never meant to cover. Each report is a place to convert or delete.
+  `@ts-expect-error` itself is not reported.
+tags: [scan, types]
+risk: low
+mode: scan
+
+steps:
+  - rule:
+      kind: comment
+      regex: "@ts-ignore"
+    message: "@ts-ignore suppresses the next error; prefer @ts-expect-error"
+
+examples:
+  - before: "// @ts-ignore"
+    after: "// @ts-ignore"
+    why: Scan recipes report the comment and leave the file untouched.

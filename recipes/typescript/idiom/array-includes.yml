@@ -1,0 +1,48 @@
+id: typescript.idiom.array-includes
+name: Use includes() instead of comparing indexOf()
+description: >-
+  `indexOf(x) >= 0`, `indexOf(x) !== -1` and their negations ask the same
+  question as `includes(x)`, so the comparison becomes the one call that names
+  it. Two behaviours change and cannot be seen syntactically: indexOf compares
+  with strict equality, so `[NaN].indexOf(NaN)` is -1 while
+  `[NaN].includes(NaN)` is true; and includes treats a sparse array's holes as
+  `undefined` where indexOf skips them. Review code that may search a list of
+  numbers for NaN, or a sparse array. A user-defined object that carries its own
+  indexOf is out of scope; the type check catches one without includes, not one
+  whose includes means something else.
+tags: [idiom, array]
+risk: medium
+
+steps:
+  - rule:
+      pattern: $X.indexOf($Y) >= 0
+    fix: $X.includes($Y)
+  - rule:
+      pattern: $X.indexOf($Y) > -1
+    fix: $X.includes($Y)
+  - rule:
+      pattern: $X.indexOf($Y) !== -1
+    fix: $X.includes($Y)
+  - rule:
+      pattern: $X.indexOf($Y) != -1
+    fix: $X.includes($Y)
+  - rule:
+      pattern: $X.indexOf($Y) < 0
+    fix: "!$X.includes($Y)"
+  - rule:
+      pattern: $X.indexOf($Y) === -1
+    fix: "!$X.includes($Y)"
+  - rule:
+      pattern: $X.indexOf($Y) == -1
+    fix: "!$X.includes($Y)"
+
+examples:
+  - before: "if (names.indexOf(name) >= 0) { use(name); }"
+    after: "if (names.includes(name)) { use(name); }"
+    why: The found case becomes the method that names it.
+  - before: "const missing = values.indexOf(value) === -1;"
+    after: "const missing = !values.includes(value);"
+    why: The absent case keeps its negation.
+  - before: "while (queue.indexOf(next) > -1) { run(next); }"
+    after: "while (queue.includes(next)) { run(next); }"
+    why: Greater-than minus one is the same test written differently.

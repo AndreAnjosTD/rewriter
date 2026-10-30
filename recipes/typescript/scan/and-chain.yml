@@ -1,0 +1,23 @@
+id: typescript.scan.and-chain
+name: Find and-chains that optional chaining could replace
+description: >-
+  Reports `a && a.b` where both sides name the same object, the shape
+  prefer-optional-chain suggests writing as `a?.b`. It stays a scan because the
+  two are not equivalent for every value: `a && a.b` yields `a` itself when `a`
+  is `0`, `""`, `false` or `NaN`, while `a?.b` yields `undefined` for those and
+  only short-circuits when `a` is nullish. When `a` is an object or nullish they
+  agree and the rewrite is a genuine simplification. The object must be
+  textually identical on both sides, so `a && b.c` is never reported.
+tags: [scan, idiom]
+risk: low
+mode: scan
+
+steps:
+  - rule:
+      pattern: $A && $A.$B
+    message: a && a.b can become a?.b when a is an object or nullish
+
+examples:
+  - before: "const name = user && user.name;"
+    after: "const name = user && user.name;"
+    why: Scan recipes report the candidate and leave the code untouched.

@@ -55,10 +55,25 @@ Python ships a recipe pack under `recipes/python/`: four idiom fixes, one migrat
 
 ```
 rustrewrite check --recipe python.idiom --path ./service                 # report what the pack would change
+rustrewrite run   --recipe python.idioms --apply --path ./service        # every safe idiom, one gate
 rustrewrite run   --recipe python.idiom.len-truthy --apply --path ./service
 ```
 
-The Python gate parses every `.py` file with `ast.parse` and writes no bytecode. It proves the rewrite is still valid Python, not that it is type-correct — run `mypy` yourself for that. `ruff format` tidies the result when `ruff` is installed, and `pytest` runs only with `--test`. `--language python` overrides detection when a repository carries markers for more than one language.
+The Python gate parses every `.py` file with `ast.parse` and writes no bytecode. It proves the rewrite is still valid Python, not that it is type-correct - run `mypy` yourself for that. `ruff format` tidies the result when `ruff` is installed, and `pytest` runs only with `--test`. `--language python` overrides detection when a repository carries markers for more than one language.
+
+### TypeScript
+
+The TypeScript pack is structural, so it needs no language server. `check --recipe <id>` finds matches without a compiler, which makes it usable on a machine that has none:
+
+```
+rustrewrite check --recipe typescript.idiom.array-includes --path .
+rustrewrite check --recipe typescript.scan --path .
+rustrewrite run   --recipe typescript.idiom.array-includes --apply --path .
+```
+
+`run --apply` is the step that needs `tsc`: the gate runs `prettier --write` when it is installed, then requires `tsc --noEmit`. Without a compiler the gate says it found no compile command and rolls the tree back, because an unverified rewrite is not a rewrite. Install TypeScript (`npm install --save-dev typescript`) or put `tsc` on `PATH` before applying.
+
+The pack has two fixes - `var` to `let` and an `indexOf` comparison to `includes` - and five scans for `console.log`, explicit `any`, `@ts-ignore`, non-null assertions, and `a && a.b` chains that optional chaining could simplify. Each scan is a scan because the decision needs the value's meaning: `a && a.b` is not `a?.b` when `a` can be `0` or `""`, and an `any` can only be narrowed by knowing the intent. The full list is in the catalog below.
 
 ## Commands
 
@@ -579,10 +594,18 @@ examples:
 | `python.idiom.not-in` | fix | `not x in y` becomes `x not in y` |
 | `python.idiom.dict-keys` | fix | a `for` iterable `d.keys()` becomes `d` |
 | `python.idiom.bool-compare` | fix | `x == True` becomes `x`, and `x == False` becomes `not x` |
+| `python.idioms` | composite | the four Python idiom fixes above, in one pass |
 | `python.migrate.open-encoding` | fix | a single-argument `open(f)` becomes `open(f, encoding="utf-8")` |
 | `python.scan.bare-except` | scan | `except:` with no exception type |
 | `python.scan.eval` | scan | `eval(...)` |
 | `python.scan.shell-true` | scan | `subprocess.*(..., shell=True)` |
+| `typescript.idiom.array-includes` | fix | `indexOf(x) >= 0` becomes `includes(x)`; review NaN searches |
+| `typescript.migrate.var-to-let` | fix | a single-declarator `var` becomes `let`, outside loops |
+| `typescript.scan.console-log` | scan | `console.log` calls |
+| `typescript.scan.any` | scan | explicit `any` types, including `as any` |
+| `typescript.scan.ts-ignore` | scan | `@ts-ignore` comments |
+| `typescript.scan.non-null` | scan | postfix `!` non-null assertions |
+| `typescript.scan.and-chain` | scan | `a && a.b` candidates for `a?.b` |
 
 Read-only recipes exist on purpose: `unwrap` is correct in a main, a prototype, or a test.
 The decision belongs to the reviewer, so the tool reports it and writes nothing.

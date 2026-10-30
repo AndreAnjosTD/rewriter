@@ -1,0 +1,58 @@
+id: typescript.migrate.var-to-let
+name: Replace a var declaration with let
+description: >-
+  Converts a single-declarator `var` that has an initializer to `let`. In the
+  ordinary local case the value is unchanged and the binding simply becomes
+  block-scoped. A `var` inside a loop is left alone: there it is one binding
+  shared by every iteration, while `let` is a fresh binding per iteration, so
+  converting it would silently change what a closure captures. Multi-declarator
+  declarations and declarations without an initializer are left alone;
+  converting only the first name would drop the rest, and a bare `var x;` has
+  no value to move. A declaration that omits its terminating semicolon is also
+  left alone. The type check catches the hoisting mistakes a recipe cannot
+  see, such as reading the name above its declaration; at the top level of a
+  non-module script `var` also creates a global property that `let` does not, so
+  review the diff there.
+tags: [migrate, modernize]
+risk: medium
+
+steps:
+  - rule:
+      all:
+        - pattern: "var $NAME = $VALUE;"
+        - not:
+            inside:
+              stopBy: end
+              any:
+                - kind: for_statement
+                - kind: while_statement
+                - kind: do_statement
+    fix: "let $NAME = $VALUE;"
+  - rule:
+      all:
+        - pattern: "var $NAME: $TYPE = $VALUE;"
+        - not:
+            inside:
+              stopBy: end
+              any:
+                - kind: for_statement
+                - kind: while_statement
+                - kind: do_statement
+    fix: "let $NAME: $TYPE = $VALUE;"
+
+examples:
+  - before: "var count = 0;"
+    after: "let count = 0;"
+    why: The ordinary local declaration keeps its value and becomes block-scoped.
+  - before: 'var label: string = "x";'
+    after: 'let label: string = "x";'
+    why: An explicit type annotation moves with the declarator.
+  - before: "var total = 0, extra = 1;"
+    after: "var total = 0, extra = 1;"
+    why: A multi-declarator declaration is left alone rather than half-rewritten.
+  - before: "var asi = 1"
+    after: "var asi = 1"
+    why: A declaration without a terminating semicolon is left alone.
+  - before: "for (var i = 0; i < 3; i++) { queue(i); }"
+    after: "for (var i = 0; i < 3; i++) { queue(i); }"
+    why: A loop's var is one binding shared across iterations; let would change closure capture.
