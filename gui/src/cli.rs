@@ -1,7 +1,7 @@
 //! Building the `rustrewrite` command line, running it off the UI thread, and
 //! turning its stdout into [`Event`]s.
 
-use crate::model::{parse_record, Record};
+use crate::model::{parse_record, Recipe, Record};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -27,9 +27,11 @@ pub struct JobSpec {
     pub binary: String,
     pub root: String,
     pub action: Action,
-    /// The recipe id. `None` is only meaningful for `List`; `check` and `run`
-    /// then fall back to the CLI's own default.
-    pub recipe: Option<String>,
+    /// The recipe selectors, each sent as its own `--recipe`, in this order.
+    /// Empty is only meaningful for `List`; `check` and `run` then fall back to
+    /// the CLI's own default. More than one entry is a batch: one scan and one
+    /// gate for the whole invocation.
+    pub recipes: Vec<String>,
     pub sets: Vec<(String, String)>,
     pub test: bool,
     pub no_verify: bool,
@@ -61,7 +63,7 @@ pub fn build_args(spec: &JobSpec) -> Vec<String> {
         }
         Action::Check => {
             args.push("check".to_string());
-            push_recipe(&mut args, spec);
+            push_recipes(&mut args, spec);
             args.push("--json".to_string());
             args.push("--diff".to_string());
             push_sets(&mut args, spec);
@@ -70,7 +72,7 @@ pub fn build_args(spec: &JobSpec) -> Vec<String> {
         Action::Apply => {
             args.push("run".to_string());
             args.push("--apply".to_string());
-            push_recipe(&mut args, spec);
+            push_recipes(&mut args, spec);
             args.push("--json".to_string());
             args.push("--diff".to_string());
             if spec.test {
@@ -89,8 +91,10 @@ pub fn build_args(spec: &JobSpec) -> Vec<String> {
     args
 }
 
-fn push_recipe(args: &mut Vec<String>, spec: &JobSpec) {
-    if let Some(recipe) = &spec.recipe {
+/// One `--recipe` per selector, in the order the caller gave them: the CLI
+/// deduplicates, runs them as one job, and gates once at the end.
+fn push_recipes(args: &mut Vec<String>, spec: &JobSpec) {
+    for recipe in &spec.recipes {
         args.push("--recipe".to_string());
         args.push(recipe.clone());
     }
@@ -108,6 +112,44 @@ fn push_warmth(args: &mut Vec<String>, spec: &JobSpec) {
     if !spec.warm {
         args.push("--cold".to_string());
     }
+}
+
+/// A recipe that cannot join a batch, and the required option that blocks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchBlocker {
+    pub recipe: String,
+    pub option: String,
+}
+
+impl BatchBlocker {
+    /// The message the app shows instead of starting the run.
+    pub fn message(&self) -> String {
+        format!(
+            "`{}` needs `--set {}=…`, and a batch shares one set of options. \
+             Uncheck it, or run it on its own.",
+            self.recipe, self.option
+        )
+    }
+}
+
+/// The first recipe in `recipes` that a batch cannot include, or `None` when
+/// they can all share one invocation.
+///
+/// A batch sends a single `--set` map for every recipe, so a recipe that
+/// declares a required option cannot join one: its option name would have to
+/// serve the whole batch, and the next recipe's required name would collide
+/// with it. A recipe with only optional defaults, or with no options at all,
+/// is fine.
+pub fn batch_blocker(recipes: &[&Recipe]) -> Option<BatchBlocker> {
+    recipes.iter().find_map(|recipe| {
+        recipe
+            .required_options()
+            .first()
+            .map(|option| BatchBlocker {
+                recipe: recipe.id.clone(),
+                option: (*option).to_string(),
+            })
+    })
 }
 
 /// Something the UI should react to.
@@ -241,7 +283,7 @@ mod tests {
             binary: DEFAULT_BINARY.to_string(),
             root: "C:/work/crate".to_string(),
             action,
-            recipe: Some("rust.idioms".to_string()),
+            recipes: vec!["rust.idioms".to_string()],
             sets: Vec::new(),
             test: false,
             no_verify: false,
@@ -250,10 +292,14 @@ mod tests {
         }
     }
 
+    fn recipe(json: &str) -> Recipe {
+        serde_json::from_str(json).expect("the recipe should parse")
+    }
+
     #[test]
     fn list_argv_asks_for_json_and_nothing_else() {
         let mut spec = spec(Action::List);
-        spec.recipe = None;
+        spec.recipes.clear();
         assert_eq!(
             build_args(&spec),
             vec!["--path", "C:/work/crate", "list", "--json"]
@@ -343,6 +389,127 @@ mod tests {
                 "--diff",
             ]
         );
+    }
+
+    #[test]
+    fn zero_recipes_omit_the_recipe_flag() {
+        let mut check = spec(Action::Check);
+        check.recipes.clear();
+        assert_eq!(
+            build_args(&check),
+            vec!["--path", "C:/work/crate", "check", "--json", "--diff"]
+        );
+
+        let mut apply = spec(Action::Apply);
+        apply.recipes.clear();
+        assert_eq!(
+            build_args(&apply),
+            vec![
+                "--path",
+                "C:/work/crate",
+                "run",
+                "--apply",
+                "--json",
+                "--diff",
+            ]
+        );
+    }
+
+    #[test]
+    fn several_recipes_become_one_recipe_flag_each_in_order() {
+        let mut spec = spec(Action::Apply);
+        // Deliberately not alphabetical: the order the caller resolved must
+        // survive into argv, because the summary echoes it back.
+        spec.recipes = vec![
+            "rust.visibility".to_string(),
+            "rust.idioms".to_string(),
+            "rust.cleanup".to_string(),
+        ];
+        assert_eq!(
+            build_args(&spec),
+            vec![
+                "--path",
+                "C:/work/crate",
+                "run",
+                "--apply",
+                "--recipe",
+                "rust.visibility",
+                "--recipe",
+                "rust.idioms",
+                "--recipe",
+                "rust.cleanup",
+                "--json",
+                "--diff",
+            ]
+        );
+        assert_eq!(
+            build_args(&spec)
+                .iter()
+                .filter(|arg| arg.as_str() == "--recipe")
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn several_recipes_keep_their_order_under_check_too() {
+        let mut spec = spec(Action::Check);
+        spec.recipes = vec!["b".to_string(), "a".to_string(), "c".to_string()];
+        assert_eq!(
+            build_args(&spec),
+            vec![
+                "--path",
+                "C:/work/crate",
+                "check",
+                "--recipe",
+                "b",
+                "--recipe",
+                "a",
+                "--recipe",
+                "c",
+                "--json",
+                "--diff",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_recipe_run_still_carries_its_sets() {
+        let mut spec = spec(Action::Apply);
+        spec.sets = vec![("file".to_string(), "src/main.rs".to_string())];
+        let args = build_args(&spec);
+        assert_eq!(
+            args.iter().filter(|arg| arg.as_str() == "--recipe").count(),
+            1
+        );
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--set" && pair[1] == "file=src/main.rs"));
+    }
+
+    #[test]
+    fn a_batch_refuses_a_recipe_that_declares_a_required_option() {
+        let blocked = recipe(
+            r#"{"id":"rust.migrate.change-type","name":"Change type","options":{"file":{"required":true,"default":null}}}"#,
+        );
+        let open = recipe(r#"{"id":"rust.idioms","name":"Idioms","options":{}}"#);
+
+        let blocker = batch_blocker(&[&open, &blocked]).expect("the batch should be refused");
+        assert_eq!(blocker.recipe, "rust.migrate.change-type");
+        assert_eq!(blocker.option, "file");
+        let message = blocker.message();
+        assert!(message.contains("rust.migrate.change-type"));
+        assert!(message.contains("--set file=…"));
+    }
+
+    #[test]
+    fn a_batch_accepts_defaults_and_recipes_without_options() {
+        let defaults_only = recipe(
+            r#"{"id":"rust.idioms","name":"Idioms","options":{"limit":{"required":false,"default":"10"}}}"#,
+        );
+        let no_options = recipe(r#"{"id":"rust.cleanup","name":"Cleanup","options":{}}"#);
+        assert_eq!(batch_blocker(&[&defaults_only, &no_options]), None);
+        assert_eq!(batch_blocker(&[]), None);
     }
 
     #[test]

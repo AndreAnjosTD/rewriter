@@ -8,7 +8,7 @@ use crate::cli::{self, Action, Event, Job, JobSpec};
 use crate::model::{Diff, Finding, Recipe, Record, Summary};
 use eframe::egui::{self, Color32, RichText};
 use egui_extras::{Column, TableBuilder};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const MAX_LOG_LINES: usize = 4000;
 
@@ -28,14 +28,28 @@ struct Flags {
     warm: bool,
 }
 
+/// The selectors and option values one action hands to the CLI.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct JobPlan {
+    recipes: Vec<String>,
+    sets: Vec<(String, String)>,
+}
+
 pub struct RustrewriteApp {
     ctx: egui::Context,
     binary: String,
     root: String,
     search: String,
     recipes: Vec<Recipe>,
+    /// The inspected recipe: whose detail and options the window shows. It is
+    /// not the run target while anything is checked.
     selected: Option<usize>,
-    option_values: BTreeMap<String, String>,
+    /// Ids of the recipes an action runs. Ids, not indices, so a catalog reload
+    /// cannot point the set at the wrong recipe. Catalog order is argv order.
+    checked: BTreeSet<String>,
+    /// Typed option values per recipe id, so inspecting or checking another
+    /// recipe does not throw away what was typed.
+    option_values: BTreeMap<String, BTreeMap<String, String>>,
     flags: Flags,
     settings_open: bool,
 
@@ -61,6 +75,7 @@ impl RustrewriteApp {
             search: String::new(),
             recipes: Vec::new(),
             selected: None,
+            checked: BTreeSet::new(),
             option_values: BTreeMap::new(),
             flags: Flags {
                 warm: true,
@@ -83,15 +98,68 @@ impl RustrewriteApp {
         self.selected.and_then(|index| self.recipes.get(index))
     }
 
+    /// The checked recipes in catalog order, which is also argv order.
+    fn checked_recipes(&self) -> Vec<&Recipe> {
+        self.recipes
+            .iter()
+            .filter(|recipe| self.checked.contains(&recipe.id))
+            .collect()
+    }
+
+    fn is_batch(&self) -> bool {
+        self.checked.len() > 1
+    }
+
+    /// The recipe a single-recipe action runs: the checked one when exactly one
+    /// is checked, otherwise the inspected one.
+    fn single_target(&self) -> Option<&Recipe> {
+        match self.checked.len() {
+            0 => self.selected_recipe(),
+            1 => self.checked_recipes().first().copied(),
+            _ => None,
+        }
+    }
+
     fn select_recipe(&mut self, index: usize) {
         self.selected = Some(index);
-        self.option_values = self
-            .recipes
-            .get(index)
-            .map(Recipe::initial_values)
-            .unwrap_or_default();
+        if let Some(recipe) = self.recipes.get(index).cloned() {
+            self.option_values_for(&recipe);
+        }
         self.reset_results();
         self.status.clear();
+    }
+
+    /// Check or uncheck one recipe. Only the checked set changes: inspection
+    /// stays where the user left it.
+    fn set_checked(&mut self, id: &str, checked: bool) {
+        if checked {
+            self.checked.insert(id.to_string());
+        } else {
+            self.checked.remove(id);
+        }
+    }
+
+    /// Check every eligible recipe the search currently shows. Recipes that
+    /// need a required option are left out, visibly, because one batch cannot
+    /// carry their `--set` values.
+    fn select_all_shown(&mut self) {
+        let query = self.search.clone();
+        let ids: Vec<String> = self
+            .recipes
+            .iter()
+            .filter(|recipe| recipe.matches(&query) && !recipe.needs_sets())
+            .map(|recipe| recipe.id.clone())
+            .collect();
+        self.checked.extend(ids);
+    }
+
+    /// The stored option values for one recipe, seeded from its declared
+    /// defaults the first time it is opened.
+    fn option_values_for(&mut self, recipe: &Recipe) -> &mut BTreeMap<String, String> {
+        let defaults = recipe.initial_values();
+        self.option_values
+            .entry(recipe.id.clone())
+            .or_insert(defaults)
     }
 
     fn reset_results(&mut self) {
@@ -106,9 +174,13 @@ impl RustrewriteApp {
     /// Option values the CLI should receive as `--set key=value`. A required
     /// option left blank stops the run here, where the message can name it.
     fn collect_sets(&self, recipe: &Recipe) -> Result<Vec<(String, String)>, String> {
+        let values = self.option_values.get(&recipe.id);
         let mut sets = Vec::new();
         for (name, option) in &recipe.options {
-            let value = self.option_values.get(name).cloned().unwrap_or_default();
+            let value = values
+                .and_then(|values| values.get(name))
+                .cloned()
+                .unwrap_or_else(|| option.default_text());
             if option.required && value.trim().is_empty() {
                 return Err(format!("Option `{name}` is required."));
             }
@@ -117,6 +189,44 @@ impl RustrewriteApp {
             }
         }
         Ok(sets)
+    }
+
+    /// What one action sends: the selectors, one per recipe, and the option
+    /// values of a single-recipe run. Nothing checked means the inspected
+    /// recipe; one checked means that recipe; several is a batch, which carries
+    /// selectors only because one `--set` map cannot belong to many recipes.
+    fn plan_job(&self, action: Action) -> Result<JobPlan, String> {
+        if action == Action::List {
+            return Ok(JobPlan::default());
+        }
+        let checked = self.checked_recipes();
+        match checked.len() {
+            0 => {
+                let Some(recipe) = self.selected_recipe() else {
+                    return Err("Select a recipe first.".to_string());
+                };
+                Ok(JobPlan {
+                    recipes: vec![recipe.id.clone()],
+                    sets: self.collect_sets(recipe)?,
+                })
+            }
+            1 => {
+                let recipe = checked[0];
+                Ok(JobPlan {
+                    recipes: vec![recipe.id.clone()],
+                    sets: self.collect_sets(recipe)?,
+                })
+            }
+            _ => {
+                if let Some(blocker) = cli::batch_blocker(&checked) {
+                    return Err(blocker.message());
+                }
+                Ok(JobPlan {
+                    recipes: checked.iter().map(|recipe| recipe.id.clone()).collect(),
+                    sets: Vec::new(),
+                })
+            }
+        }
     }
 
     fn start_job(&mut self, action: Action) {
@@ -128,30 +238,21 @@ impl RustrewriteApp {
             self.error = Some("Choose a workspace root first.".to_string());
             return;
         }
-
-        let mut recipe = None;
-        let mut sets = Vec::new();
-        if action != Action::List {
-            let Some(selected) = self.selected_recipe() else {
-                self.error = Some("Select a recipe first.".to_string());
+        let plan = match self.plan_job(action) {
+            Ok(plan) => plan,
+            Err(message) => {
+                self.error = Some(message);
                 return;
-            };
-            recipe = Some(selected.id.clone());
-            match self.collect_sets(selected) {
-                Ok(collected) => sets = collected,
-                Err(message) => {
-                    self.error = Some(message);
-                    return;
-                }
             }
-        }
+        };
+        let count = plan.recipes.len();
 
         let spec = JobSpec {
             binary: self.binary.clone(),
             root,
             action,
-            recipe,
-            sets,
+            recipes: plan.recipes,
+            sets: plan.sets,
             test: self.flags.test,
             no_verify: self.flags.no_verify,
             allow_dirty: self.flags.allow_dirty,
@@ -165,6 +266,10 @@ impl RustrewriteApp {
                 self.reset_results();
                 self.status = match action {
                     Action::List => "Loading catalog…".to_string(),
+                    Action::Check if count > 1 => format!("Checking {count} recipes…"),
+                    Action::Apply if count > 1 => {
+                        format!("Applying {count} recipes and verifying…")
+                    }
                     Action::Check => "Checking…".to_string(),
                     Action::Apply => "Applying and verifying…".to_string(),
                 };
@@ -252,11 +357,15 @@ impl RustrewriteApp {
                 self.recipes = recipes;
                 self.selected =
                     previous.and_then(|id| self.recipes.iter().position(|recipe| recipe.id == id));
-                self.option_values = self
-                    .selected
-                    .and_then(|index| self.recipes.get(index))
-                    .map(Recipe::initial_values)
-                    .unwrap_or_default();
+                // Ids that the new catalog no longer lists cannot be checked or
+                // carry options any more.
+                self.checked
+                    .retain(|id| self.recipes.iter().any(|recipe| &recipe.id == id));
+                self.option_values
+                    .retain(|id, _| self.recipes.iter().any(|recipe| &recipe.id == id));
+                if let Some(recipe) = self.selected_recipe().cloned() {
+                    self.option_values_for(&recipe);
+                }
             }
             Record::Finding(finding) => self.findings.push(finding),
             Record::Diff(diff) => {
@@ -311,8 +420,43 @@ impl RustrewriteApp {
                     .desired_width(200.0)
                     .hint_text("id, name, tag"),
             );
-            if !self.search.is_empty() && ui.small_button("Clear").clicked() {
+            if !self.search.is_empty()
+                && ui
+                    .small_button("✕")
+                    .on_hover_text("Clear the search")
+                    .clicked()
+            {
                 self.search.clear();
+            }
+            ui.separator();
+            let idle = self.job.is_none();
+            let query = self.search.clone();
+            let selectable = self.recipes.iter().any(|recipe| {
+                recipe.matches(&query) && !recipe.needs_sets() && !self.checked.contains(&recipe.id)
+            });
+            if ui
+                .add_enabled(selectable && idle, egui::Button::new("Select all shown"))
+                .on_hover_text(
+                    "Check every recipe the search shows. Recipes that need --set are skipped, \
+                     because a batch cannot carry their options.",
+                )
+                .clicked()
+            {
+                self.select_all_shown();
+            }
+            if ui
+                .add_enabled(!self.checked.is_empty() && idle, egui::Button::new("Clear"))
+                .on_hover_text("Uncheck every recipe.")
+                .clicked()
+            {
+                self.checked.clear();
+            }
+            if !self.checked.is_empty() {
+                ui.label(
+                    RichText::new(format!("{} checked", self.checked.len()))
+                        .small()
+                        .weak(),
+                );
             }
             ui.separator();
             if ui.button("Settings").clicked() {
@@ -326,6 +470,7 @@ impl RustrewriteApp {
         let selected = self.selected;
         let busy = self.job.is_some();
         let mut pick = None;
+        let mut toggle = None;
 
         ui.horizontal(|ui| {
             ui.heading("Recipes");
@@ -366,13 +511,54 @@ impl RustrewriteApp {
                             "{}\n{}  ·  {}  ·  risk {}",
                             recipe.name, recipe.id, kind, risk
                         );
-                        let response = ui.selectable_label(selected == Some(index), text);
-                        if !recipe.description.is_empty() {
-                            response.clone().on_hover_text(&recipe.description);
+                        let required = recipe.required_options();
+                        let mut hover = recipe.description.clone();
+                        if !required.is_empty() {
+                            if !hover.is_empty() {
+                                hover.push('\n');
+                            }
+                            hover.push_str(&format!(
+                                "Needs --set {}: a batch shares one option map, so this recipe can only run on its own.",
+                                required.join(", ")
+                            ));
                         }
-                        if response.clicked() {
-                            pick = Some(index);
-                        }
+                        ui.horizontal(|ui| {
+                            // The checkbox picks what the actions run; the label
+                            // picks what the detail pane shows. Neither one moves
+                            // the other.
+                            let mut checked = self.checked.contains(&recipe.id);
+                            let box_response = ui.add_enabled(
+                                required.is_empty(),
+                                egui::Checkbox::without_text(&mut checked),
+                            );
+                            let box_response = if required.is_empty() {
+                                box_response.on_hover_text("Include this recipe in the batch")
+                            } else {
+                                box_response.on_disabled_hover_text(format!(
+                                    "This recipe needs --set {}; it can only run on its own.",
+                                    required.join(", ")
+                                ))
+                            };
+                            if box_response.changed() {
+                                toggle = Some((recipe.id.clone(), checked));
+                            }
+
+                            let mut response =
+                                ui.selectable_label(selected == Some(index), text);
+                            if !hover.is_empty() {
+                                response = response.on_hover_text(hover);
+                            }
+                            if response.clicked() {
+                                pick = Some(index);
+                            }
+                            if !required.is_empty() {
+                                ui.label(RichText::new("needs --set").small().weak())
+                                    .on_hover_text(format!(
+                                        "Options are single-recipe only: fill {} on its own.",
+                                        required.join(", ")
+                                    ));
+                            }
+                        });
                     }
                     if shown == 0 {
                         ui.add_space(8.0);
@@ -387,6 +573,9 @@ impl RustrewriteApp {
 
         if let Some(index) = pick {
             self.select_recipe(index);
+        }
+        if let Some((id, checked)) = toggle {
+            self.set_checked(&id, checked);
         }
     }
 
@@ -434,38 +623,7 @@ impl RustrewriteApp {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
-                if recipe.options.is_empty() {
-                    ui.label("This recipe takes no options.");
-                } else {
-                    egui::Grid::new("recipe_options")
-                        .num_columns(2)
-                        .spacing([16.0, 10.0])
-                        .show(ui, |ui| {
-                            for (name, option) in &recipe.options {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(name).monospace());
-                                    if option.required {
-                                        ui.colored_label(Color32::from_rgb(232, 168, 78), "*")
-                                            .on_hover_text("Required");
-                                    }
-                                });
-                                let mut value =
-                                    self.option_values.get(name).cloned().unwrap_or_default();
-                                ui.vertical(|ui| {
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut value)
-                                            .desired_width(380.0)
-                                            .hint_text(option.default_text()),
-                                    );
-                                    if !option.description.is_empty() {
-                                        ui.label(RichText::new(&option.description).small().weak());
-                                    }
-                                });
-                                self.option_values.insert(name.clone(), value);
-                                ui.end_row();
-                            }
-                        });
-                }
+                self.options_ui(ui, recipe);
             }
             None => {
                 ui.heading("No recipe selected");
@@ -479,21 +637,118 @@ impl RustrewriteApp {
         self.actions_ui(ui);
     }
 
+    /// The option fields. They belong to one recipe, so a batch hides them and
+    /// says why; a single run shows the options of the recipe it will use.
+    fn options_ui(&mut self, ui: &mut egui::Ui, inspected: &Recipe) {
+        if self.is_batch() {
+            let checked = self.checked_recipes();
+            let ids = checked
+                .iter()
+                .map(|recipe| recipe.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            ui.label(
+                RichText::new(format!(
+                    "{} recipes checked: they run in one pass, and options are single-recipe only.",
+                    checked.len()
+                ))
+                .strong(),
+            );
+            ui.label(RichText::new(truncate(&ids, 120)).small().weak())
+                .on_hover_text(&ids);
+            ui.label(
+                RichText::new("Uncheck all but one recipe to set its options.")
+                    .small()
+                    .weak(),
+            );
+            return;
+        }
+
+        let Some(target) = self.single_target().cloned() else {
+            return;
+        };
+        if target.id != inspected.id {
+            ui.label(format!(
+                "The run uses the checked recipe `{}`; its options are below.",
+                target.id
+            ));
+            ui.add_space(4.0);
+        }
+        if target.options.is_empty() {
+            ui.label("This recipe takes no options.");
+            return;
+        }
+
+        let slot = self.option_values_for(&target);
+        egui::Grid::new("recipe_options")
+            .num_columns(2)
+            .spacing([16.0, 10.0])
+            .show(ui, |ui| {
+                for (name, option) in &target.options {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(name).monospace());
+                        if option.required {
+                            ui.colored_label(Color32::from_rgb(232, 168, 78), "*")
+                                .on_hover_text("Required");
+                        }
+                    });
+                    let mut value = slot
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| option.default_text());
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut value)
+                                .desired_width(380.0)
+                                .hint_text(option.default_text()),
+                        );
+                        if !option.description.is_empty() {
+                            ui.label(RichText::new(&option.description).small().weak());
+                        }
+                    });
+                    slot.insert(name.clone(), value);
+                    ui.end_row();
+                }
+            });
+    }
+
     fn actions_ui(&mut self, ui: &mut egui::Ui) {
         let busy = self.job.is_some();
-        let can_run = !busy && self.selected.is_some();
+        let checked = self.checked.len();
+        let can_run = !busy && (checked > 0 || self.selected.is_some());
+        let check_label = if checked > 1 {
+            format!("Check {checked} recipes")
+        } else {
+            "Check".to_string()
+        };
+        let apply_label = if checked > 1 {
+            format!("Apply {checked} recipes")
+        } else {
+            "Apply".to_string()
+        };
+        let check_hover = if checked > 1 {
+            "Report what would change for every checked recipe, in one run. Never writes."
+                .to_string()
+        } else {
+            "Report what would change. Never writes.".to_string()
+        };
+        let apply_hover = if checked > 1 {
+            format!("Rewrite all {checked} checked recipes in one run, then gate once at the end.")
+        } else {
+            "Rewrite, then run the correctness gate.".to_string()
+        };
 
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(can_run, egui::Button::new("Check"))
-                .on_hover_text("Report what would change. Never writes.")
+                .add_enabled(can_run, egui::Button::new(check_label))
+                .on_hover_text(check_hover)
                 .clicked()
             {
                 self.start_job(Action::Check);
             }
             if ui
-                .add_enabled(can_run, egui::Button::new("Apply"))
-                .on_hover_text("Rewrite, then run the correctness gate.")
+                .add_enabled(can_run, egui::Button::new(apply_label))
+                .on_hover_text(apply_hover)
                 .clicked()
             {
                 self.start_job(Action::Apply);
@@ -786,9 +1041,15 @@ fn summary_text(summary: &Summary) -> String {
         "findings"
     };
     let files = if summary.files == 1 { "file" } else { "files" };
+    // A batch reports every selector it ran, comma-joined, so the summary
+    // names the run rather than only its totals.
+    let ran = match summary.recipe.as_deref() {
+        Some(recipe) if !recipe.is_empty() => format!("{} {recipe}", summary.command),
+        _ => summary.command.clone(),
+    };
     let mut text = format!(
-        "{}: {} {findings} in {} {files}",
-        summary.command, summary.findings, summary.files
+        "{ran}: {} {findings} in {} {files}",
+        summary.findings, summary.files
     );
     if summary.applied {
         text.push_str(" · applied and kept");
@@ -861,4 +1122,34 @@ fn error_banner(ui: &mut egui::Ui, message: &str) {
                 ui.colored_label(ERROR_TEXT, format!("Error: {message}"));
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(recipe: Option<&str>, command: &str) -> Summary {
+        Summary {
+            command: command.to_string(),
+            recipe: recipe.map(str::to_string),
+            findings: 2,
+            files: 1,
+            changed: true,
+            applied: command == "run",
+            gates: None,
+        }
+    }
+
+    #[test]
+    fn a_batch_summary_names_every_selector_it_ran() {
+        let text = summary_text(&summary(Some("rust.idioms,rust.cleanup"), "run"));
+        assert!(text.starts_with("run rust.idioms,rust.cleanup:"));
+        assert!(text.contains("2 findings in 1 file"));
+    }
+
+    #[test]
+    fn a_summary_without_a_recipe_names_the_command_only() {
+        let text = summary_text(&summary(None, "check"));
+        assert!(text.starts_with("check:"));
+    }
 }
