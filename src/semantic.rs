@@ -162,6 +162,15 @@ fn is_definitive(err: &anyhow::Error) -> bool {
     text.contains("-32602") || text.contains("No references found at position")
 }
 
+/// The server is still catching up with an edit the client just sent. LSP has no
+/// "please retry" code, but rust-analyzer answers this one when its snapshot is
+/// older than the document it was asked about, and the correct response is to
+/// ask again.
+fn is_not_ready(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}");
+    text.contains("-32801") || text.contains("content modified")
+}
+
 impl Server {
     /// Spawn `rust-analyzer` and complete the initialize handshake.
     pub fn start(root: &Path) -> Result<Self> {
@@ -256,8 +265,7 @@ impl Server {
                                             "source.fixAll"
                                         ]
                                     }
-                                },
-                                "resolveSupport": { "properties": ["edit"] }
+                                }
                             }
                         }
                     },
@@ -641,8 +649,10 @@ impl Server {
         let deadline = Instant::now() + budget;
         let grace = Instant::now() + budget.min(Duration::from_secs(8));
         let mut delay = Duration::from_millis(250);
+        let mut last_error: Option<anyhow::Error> = None;
+        let mut answered = false;
         loop {
-            let value = self.request(
+            match self.request(
                 "textDocument/codeAction",
                 json!({
                     "textDocument": { "uri": path_to_uri(path) },
@@ -653,15 +663,30 @@ impl Server {
                     "context": { "diagnostics": [] }
                 }),
                 DEFAULT_REQUEST_TIMEOUT,
-            )?;
-            let actions = parse_code_actions(value);
-            self.answered = true;
-            if !actions.is_empty() {
-                return Ok(actions);
+            ) {
+                Ok(value) => {
+                    answered = true;
+                    let actions = parse_code_actions(value);
+                    self.answered = true;
+                    if !actions.is_empty() {
+                        return Ok(actions);
+                    }
+                }
+                // The server rejects a request whose snapshot predates the
+                // document it was just sent; asking again is the answer.
+                Err(err) if is_not_ready(&err) => last_error = Some(err),
+                Err(err) => return Err(err),
             }
             let now = Instant::now();
             if now >= deadline || now >= grace {
-                return Ok(Vec::new());
+                return match (answered, last_error) {
+                    // A real answer with no assists is an answer.
+                    (true, _) => Ok(Vec::new()),
+                    (false, Some(err)) => {
+                        Err(err.context("rust-analyzer produced no code actions"))
+                    }
+                    (false, None) => Ok(Vec::new()),
+                };
             }
             thread::sleep(delay);
             delay = (delay * 2).min(Duration::from_secs(2));
@@ -669,15 +694,37 @@ impl Server {
     }
 
     /// Turn an assist into concrete edits.
+    ///
+    /// A server that is not asked to defer edits answers with them inline, and
+    /// that is the path we prefer: rust-analyzer's deferred form encodes an
+    /// index into the assist list it just offered, which breaks when the list
+    /// shifts between the two calls ("Mismatching assist at index 0"). When a
+    /// build does defer, an empty resolve is retried for a short grace, because
+    /// the server may still be analysing the document it was just sent.
     pub fn resolve_action(
         &mut self,
         action: &CodeAction,
         budget: Duration,
     ) -> Result<Vec<FileEdits>> {
-        let value = self.request("codeAction/resolve", action.raw.clone(), budget)?;
-        match value.get("edit") {
-            Some(edit) if !edit.is_null() => parse_workspace_edit(edit.clone()),
-            _ => Ok(Vec::new()),
+        if let Some(edit) = action.raw.get("edit").filter(|edit| !edit.is_null()) {
+            return parse_workspace_edit(edit.clone());
+        }
+        let deadline = Instant::now() + budget.min(Duration::from_secs(20));
+        let mut delay = Duration::from_millis(250);
+        loop {
+            let value = self.request("codeAction/resolve", action.raw.clone(), budget)?;
+            if let Some(edit) = value.get("edit").filter(|edit| !edit.is_null()) {
+                return parse_workspace_edit(edit.clone());
+            }
+            if std::env::var_os("RUSTREWRITE_TRACE").is_some() {
+                let shown: String = value.to_string().chars().take(600).collect();
+                eprintln!("[trace] resolve `{}` had no edit yet: {shown}", action.title);
+            }
+            if Instant::now() >= deadline {
+                return Ok(Vec::new());
+            }
+            thread::sleep(delay);
+            delay = (delay * 2).min(Duration::from_secs(2));
         }
     }
 
