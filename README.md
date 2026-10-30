@@ -190,6 +190,18 @@ It edits the declaration exactly: an existing `-> Old` is replaced in place, and
 
 Call sites are deliberately not rewritten. Widening a return type is only safe where the compiler says it is, and the way to find that out is to compile: if any caller relied on the old type, the correctness gate rolls the whole run back and the recipe reports a failed run. That is the correct outcome, not a hidden failure. A recipe that guessed at caller fixes would be a recipe that silently changes behaviour.
 
+### Changing a function's visibility
+
+```
+rustrewrite run --recipe rust.migrate.change-visibility \
+  --set file=src/lib.rs --set 'anchor=fn helper()' \
+  --set from=helper --set to=pub(crate) --apply
+```
+
+The four accepted forms are `pub`, `pub(crate)`, `pub(super)` and `pub(in crate::module)`. An existing modifier is replaced in place. A private declaration gets one inserted before `async`, `const`, `unsafe`, `extern` and `fn`, which is the order Rust accepts. `--set to=` with an empty value removes the modifier and makes the function private.
+
+`to` is required, so leaving it out is an error; an empty value is a deliberate request for privacy. The declaration is the only edit, and the correctness gate decides whether the result still compiles.
+
 ### Rewriting call sites
 
 Changing an argument list is not one symbol, it is every call plus the declaration, and getting one wrong stops the crate compiling. Three recipes handle that family:
@@ -237,6 +249,22 @@ rustrewrite run --recipe rust.migrate.string-literal-to-constant \
 `from`, and the replacement value for `replace-string-literal`, are written as they appear between the quotes, so an escaped quote is `\"`, and a raw literal's backslashes are literal characters. Byte (`b"..."`) and C (`c"..."`) string literals are not rewritten.
 
 `replace-string-literal` changes the value and leaves a literal. `string-literal-to-constant` replaces the whole literal with an expression, and it does not create or import anything: the constant has to exist and be in scope where the literal was. The compile gate is what proves it, and a missing constant fails the run and rolls the change back.
+
+## Attributes
+
+Two structural primitives cover OpenRewrite's annotation recipes:
+
+```
+rustrewrite run --recipe rust.migrate.remove-attribute \
+  --set attribute=deprecated --apply
+
+rustrewrite run --recipe rust.migrate.replace-attribute \
+  --set from=deprecated --set to=obsolete --apply
+```
+
+`attribute`, `from` and `to` are names, not patterns. `remove-attribute` removes both `#[deprecated]` and `#[deprecated(...)]` from every item that carries it, and takes the whole line when the attribute is alone on it. `replace-attribute` renames the attribute in place and keeps its arguments, so `#[deprecated(note = "old")]` becomes `#[obsolete(note = "old")]`.
+
+Both match the attribute's own name exactly. An attribute whose name merely starts with the same text (`#[deprecated_since]`) is left alone, a comment that mentions the attribute is not an attribute node at all, and an identifier inside the arguments is not the name. Inner attributes (`#![...]`) are outside the two recipes, and `replace-attribute` leaves a scoped path alone rather than renaming one segment of it.
 
 ## What the gate does
 
@@ -426,6 +454,7 @@ examples:
 | `rust.migrate.rename-symbol` | semantic | rename a resolved constant, static, field or function |
 | `rust.migrate.change-type` | semantic | rename a resolved type and every reference |
 | `rust.migrate.change-return-type` | semantic | replace a function's declared return type |
+| `rust.migrate.change-visibility` | semantic | replace, add, or remove a function's visibility |
 | `rust.migrate.delete-argument` | semantic | drop an argument from a call and a parameter from the declaration |
 | `rust.migrate.add-argument` | semantic | insert an argument at every call site and a parameter in the declaration |
 | `rust.migrate.reorder-arguments` | semantic | permute arguments at every call site and parameters in the declaration |
@@ -435,6 +464,8 @@ examples:
 | `rust.migrate.add-import` | insert | adds a missing `use` after the last import, without duplicating one |
 | `rust.migrate.replace-string-literal` | fix | a string literal's exact value, plain or raw, becomes another value |
 | `rust.migrate.string-literal-to-constant` | fix | a string literal becomes an existing constant expression |
+| `rust.migrate.remove-attribute` | fix | removes `#[name]` and `#[name(...)]` from every item carrying it |
+| `rust.migrate.replace-attribute` | fix | renames an attribute in place, keeping its arguments |
 | `rust.fix.cargo-fix` | cargo | applies compiler suggestions |
 | `rust.fix.clippy` | cargo | applies clippy machine-applicable fixes |
 | `rust.cleanup` | composite | idiom pack, then compiler suggestions |
@@ -456,6 +487,8 @@ The decision belongs to the reviewer, so the tool reports it and writes nothing.
 - **Structural recipes are syntax-only.** A `pattern` in type position does not parse, so a type rewrite needs `kind:` plus `regex:` and cannot capture a metavariable. Use an analyzer-backed recipe when a change must be type-exact.
 - **Syntax alone cannot resolve a symbol.** Nothing that needs to know whether an identifier is a trait, a module or a struct can be decided structurally. Use the `rust.migrate.*` recipes that ask rust-analyzer; they are slower because they load the workspace.
 - **`change-return-type` does not rewrite call sites.** It edits the declaration only. A caller that relied on the old type makes the gate fail the whole run and roll back, which is the intended outcome rather than a bug. Update the caller by hand and re-run.
+- **`change-visibility` is checked against this workspace only.** Making a `pub` item private compiles here even when a downstream crate outside the workspace still calls it. A trait method cannot carry a visibility qualifier, so the gate rejects a change there rather than keeping invalid code.
+- **Attribute recipes see outer attributes only.** `#![...]` inner attributes and attributes nested inside `cfg_attr(...)` are not `attribute_item` nodes, so `remove-attribute` and `replace-attribute` leave them alone.
 - **Resolved renames do not reach inside macro invocations.** rust-analyzer omits edits for tokens inside a macro call such as `println!`. Keep the renamed use outside the macro or update it by hand; the gate catches the breakage.
 - **The gate needs the crate to compile before you start.** A pre-broken tree fails at the gate and rolls back, which is correct but unsurprising.
 - **`cargo fmt` rewrites formatting after a fix.** Replacements are syntactically correct but not always layout-correct; the formatter is the last mile.

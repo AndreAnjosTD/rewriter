@@ -1,0 +1,64 @@
+id: rust.migrate.remove-attribute
+name: Remove an attribute
+description: >-
+  Removes every `#[attribute]` and `#[attribute(...)]` from the items that
+  carry it, the Rust form of OpenRewrite's RemoveAnnotation. The option is the
+  attribute's name, not a pattern: the two structural rules match the exact
+  name followed by `]` or `(`, so an attribute whose name merely starts with
+  the same text is left alone, and a comment that mentions the attribute is
+  not an attribute node at all. When the attribute is alone on its line the
+  whole line goes, so no blank line is left behind.
+tags: [migrate, attribute]
+risk: low
+
+options:
+  attribute:
+    description: >-
+      The attribute name only, such as `deprecated`. A path or its leading
+      segment is not treated as a name.
+    required: true
+    literal: true
+
+steps:
+  # Matching the whole attribute item, rather than its name token, is what
+  # lets `delete` take the line with it. The two patterns are anchored by the
+  # grammar: `#[deprecated_since]` cannot match `#[deprecated]` or
+  # `#[deprecated(...)]`.
+  - kind: structural
+    rule:
+      all:
+        - kind: attribute_item
+        - any:
+            - pattern: '#[${attribute}]'
+            - pattern: '#[${attribute}($$$ARGS)]'
+    delete: true
+
+examples:
+  - before: |
+      #[deprecated]
+      fn legacy() {}
+    after: |
+      fn legacy() {}
+    options:
+      attribute: deprecated
+    why: A bare attribute is removed with its line.
+  - before: |
+      #[deprecated(note = "use modern")]
+      struct Old;
+    after: |
+      struct Old;
+    options:
+      attribute: deprecated
+    why: An attribute with arguments is removed as a whole.
+  - before: |
+      // #[deprecated] is explained here.
+      #[deprecated_since]
+      #[deprecated]
+      fn legacy() {}
+    after: |
+      // #[deprecated] is explained here.
+      #[deprecated_since]
+      fn legacy() {}
+    options:
+      attribute: deprecated
+    why: A comment and a name-prefixed sibling are not the named attribute.

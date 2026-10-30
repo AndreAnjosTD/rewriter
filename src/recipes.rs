@@ -80,6 +80,8 @@ pub enum SemanticAction {
     Assist,
     /// Replace the declared return type of a resolved function.
     ChangeReturnType,
+    /// Replace, add, or remove the visibility of a resolved function.
+    ChangeVisibility,
 }
 
 /// A recipe parameter, the equivalent of OpenRewrite's `@Option`.
@@ -239,10 +241,9 @@ impl Catalog {
 
         // Project-local recipes take precedence over built-ins: this is how a
         // team pins its own migration catalog next to the code it migrates.
-        for dir in [root.join(".rustrewrite").join("recipes")] {
-            if dir.is_dir() {
-                catalog.load_dir(&dir)?;
-            }
+        let dir = root.join(".rustrewrite").join("recipes");
+        if dir.is_dir() {
+            catalog.load_dir(&dir)?;
         }
 
         for path in extra {
@@ -367,6 +368,16 @@ impl Catalog {
                             bail!(
                                 "recipe `{}` has a change-return-type step without a non-empty \
                                  `to`",
+                                recipe.id
+                            )
+                        }
+                        // Unlike a return type, an empty `to` is the deliberate
+                        // way to ask for a private declaration; only a missing
+                        // value is a mistake.
+                        SemanticAction::ChangeVisibility if step.to.is_none() => {
+                            bail!(
+                                "recipe `{}` has a change-visibility step without `to` \
+                                 (an empty value makes the item private)",
                                 recipe.id
                             )
                         }

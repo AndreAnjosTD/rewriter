@@ -38,9 +38,9 @@ These are the reusable building blocks — the ones a declarative recipe compose
 
 | Verdict | Count | Recipes |
 | --- | ---: | --- |
-| **Shipped as Rust recipes** | 14 | `ReplaceConstant`, `RemoveMethodInvocations`, `AddImport`, `AddLicenseHeader`, `ReplaceStringLiteralValue`, `ReplaceStringLiteralWithConstant`, plus the eight type-attribution primitives listed below |
+| **Shipped as Rust recipes** | 17 | `ReplaceConstant`, `RemoveMethodInvocations`, `AddImport`, `AddLicenseHeader`, `ReplaceStringLiteralValue`, `ReplaceStringLiteralWithConstant`, `ChangeMethodAccessLevel`, `RemoveAnnotation`, `ReplaceAnnotation`, plus the eight type-attribution primitives listed below |
 | **Covered by another mechanism** | 4 | `OrderImports` → `rustfmt` (on by default); `RemoveUnusedImports` → `cargo fix`; `InlineMethodCalls` and `ShortenFullyQualifiedTypeReferences` → `rust.migrate.assist`, which runs the rust-analyzer assist for each |
-| **Expressible, needs engine work** | 12 | `ChangePackage`, `ChangePackageInStringLiteral`, `ChangeTypeInStringLiteral`, `ChangeMethodAccessLevel`, `NoStaticImport`, `UseStaticImport`, `RemoveAnnotation`, `RemoveAnnotationAttribute`, `ReplaceAnnotation`, `AddCommentToImport`, `AddCommentToMethod`, `AddCommentToMethodInvocations` |
+| **Expressible, needs engine work** | 9 | `ChangePackage`, `ChangePackageInStringLiteral`, `ChangeTypeInStringLiteral`, `NoStaticImport`, `UseStaticImport`, `RemoveAnnotationAttribute`, `AddCommentToImport`, `AddCommentToMethod`, `AddCommentToMethodInvocations` |
 | **Still open, needs type attribution** | 8 | `ChangeMethodTargetToStatic`, `ChangeMethodTargetToVariable`, `ChangeStaticFieldToMethod`, `ChangeAnnotationAttributeName`, `AddOrUpdateAnnotationAttribute`, `AddNullMethodArgument`, `SimplifyMethodChain`, `ReplaceMethodInvocationWithConstant` |
 | **Not applicable** | 7 | `CreateEmptyJavaClass`, `RandomizeId`, `RecipeMarkupDemonstration`, `RemoveMethodThrows`, `RemoveObjectsIsNull`, `UpdateSourcePositions`, `SimplifySingleElementAnnotation` |
 
@@ -118,6 +118,9 @@ Shipped because clippy does not cover them, or because the result reads better t
 | `rust.migrate.replace-string-literal` | fix | `ReplaceStringLiteralValue` |
 | `rust.migrate.string-literal-to-constant` | fix | `ReplaceStringLiteralWithConstant` |
 | `rust.migrate.change-return-type` | semantic | `ChangeMethodInvocationReturnType` |
+| `rust.migrate.change-visibility` | semantic | `ChangeMethodAccessLevel` |
+| `rust.migrate.remove-attribute` | fix | `RemoveAnnotation` |
+| `rust.migrate.replace-attribute` | fix | `ReplaceAnnotation` |
 | `rust.migrate.rename-symbol` | semantic | `ReplaceConstantWithAnotherConstant` (the rename form) |
 | `rust.scan.transmute` | scan | `AvoidUnsafePackage` |
 | `rust.scan.process-exit` | scan | `FindSystemAndRuntimeExitCalls` |

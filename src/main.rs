@@ -726,27 +726,50 @@ fn run_semantic(
         let text = read_source(&overlay, &path)?;
         let (offset, line, character) = locate_token(&text, step, &path)?;
 
-        if step.action == SemanticAction::ChangeReturnType {
-            let edit = signature::set_return_type(&text, offset, &step.from, &step.to)
-                .with_context(|| {
-                    format!(
-                        "changing the return type of `{}` in {}",
-                        step.from,
-                        step.file.display()
-                    )
-                })?;
+        // Declaration edits need no server: they rewrite one token tree and
+        // leave every caller to the compile gate. The server starts lazily only
+        // when a later step actually needs it.
+        if matches!(
+            step.action,
+            SemanticAction::ChangeReturnType | SemanticAction::ChangeVisibility
+        ) {
+            let (range, previous, replacement) = match step.action {
+                SemanticAction::ChangeReturnType => {
+                    let edit = signature::set_return_type(&text, offset, &step.from, &step.to)
+                        .with_context(|| {
+                            format!(
+                                "changing the return type of `{}` in {}",
+                                step.from,
+                                step.file.display()
+                            )
+                        })?;
+                    (edit.range, edit.previous, edit.replacement)
+                }
+                SemanticAction::ChangeVisibility => {
+                    let edit = signature::set_visibility(&text, offset, &step.from, &step.to)
+                        .with_context(|| {
+                            format!(
+                                "changing the visibility of `{}` in {}",
+                                step.from,
+                                step.file.display()
+                            )
+                        })?;
+                    (edit.range, edit.previous, edit.replacement)
+                }
+                _ => unreachable!("the enclosing match limits the actions"),
+            };
             let mut updated = text.clone();
-            updated.replace_range(edit.range.clone(), &edit.replacement);
+            updated.replace_range(range.clone(), &replacement);
             if updated == text {
                 continue;
             }
-            let (found_line, found_column) = util::line_column(&text, edit.range.start);
+            let (found_line, found_column) = util::line_column(&text, range.start);
             outcome.findings.push(Finding {
                 recipe: step.recipe.clone(),
                 path: path.clone(),
                 line: found_line,
                 column: found_column,
-                before: edit.previous,
+                before: previous,
                 after: Some(step.to.trim().to_string()),
                 message: String::new(),
             });
@@ -849,6 +872,7 @@ fn run_semantic(
                 edits
             }
             SemanticAction::ChangeReturnType => unreachable!("handled above"),
+            SemanticAction::ChangeVisibility => unreachable!("handled above"),
             _ => {
                 let op = argument_op(step)?;
                 let rewrites = plan_argument_rewrites(
@@ -969,6 +993,9 @@ fn argument_op(step: &SemanticStep) -> Result<callsites::Op> {
         SemanticAction::Assist => unreachable!("assist is handled separately"),
         SemanticAction::ChangeReturnType => {
             unreachable!("change-return-type is handled separately")
+        }
+        SemanticAction::ChangeVisibility => {
+            unreachable!("change-visibility is handled separately")
         }
     }
 }
