@@ -646,7 +646,13 @@ fn check(
                     }
                 })
                 .collect::<String>();
-            println!("write them with: rustrewrite run {flags} --apply{supplied}");
+            // A scan recipe reports hazards and never writes, so offering an
+            // --apply for it would be a lie about what running it does.
+            if changed_files > 0 {
+                println!("write them with: rustrewrite run {flags} --apply{supplied}");
+            } else {
+                println!("nothing to write: these are findings for a human to judge");
+            }
         }
     }
 
