@@ -4,7 +4,14 @@
 //! This is what makes the tool safe to run unattended. A rewrite that does not
 //! compile is not a rewrite, it is a broken build, and the tool refuses to leave
 //! one behind.
+//!
+//! Which commands prove that is a property of the language, not of this file:
+//! `Cargo.toml` means `cargo check`, `tsconfig.json` means `tsc --noEmit`, and
+//! Python has no compiler at all so its gate parses every file instead. A
+//! required command whose program is missing fails the gate rather than passing
+//! it silently.
 
+use crate::language::{CommandSpec, Language};
 use crate::util;
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -20,24 +27,26 @@ pub struct Gate {
 
 pub struct Snapshot {
     root: PathBuf,
+    language: &'static Language,
     files: Vec<(PathBuf, String)>,
 }
 
 impl Snapshot {
-    pub fn take(root: &Path) -> Result<Self> {
+    pub fn take(root: &Path, language: &'static Language) -> Result<Self> {
         let mut files = Vec::new();
-        for path in util::rust_files(root)? {
+        for path in util::source_files(root, language)? {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("snapshotting {}", path.display()))?;
             files.push((path, text));
         }
         Ok(Self {
             root: root.to_path_buf(),
+            language,
             files,
         })
     }
 
-    /// Restore every snapshotted file and remove `.rs` files that did not exist
+    /// Restore every snapshotted file and remove source files that did not exist
     /// before the run.
     pub fn restore(&self) -> Result<()> {
         for (path, text) in &self.files {
@@ -47,7 +56,7 @@ impl Snapshot {
             std::fs::write(path, text).with_context(|| format!("restoring {}", path.display()))?;
         }
         let known: BTreeSet<&PathBuf> = self.files.iter().map(|(p, _)| p).collect();
-        for path in util::rust_files(&self.root).unwrap_or_default() {
+        for path in util::source_files(&self.root, self.language).unwrap_or_default() {
             if !known.contains(&path) {
                 std::fs::remove_file(&path).ok();
             }
@@ -56,54 +65,99 @@ impl Snapshot {
     }
 }
 
-pub fn run(root: &Path, with_tests: bool) -> Result<Vec<Gate>> {
+pub fn run(root: &Path, language: &'static Language, with_tests: bool) -> Result<Vec<Gate>> {
     let mut gates = Vec::new();
 
-    // Formatting is applied rather than asserted: ast-grep replacements are
-    // syntactically correct but not always layout-correct, and a formatter pass
-    // is the cheapest way to leave the tree tidy without changing meaning.
-    let fmt = Command::new("cargo")
-        .args(["fmt", "--all"])
-        .current_dir(root)
-        .output();
-    match fmt {
-        Ok(out) => gates.push(Gate {
-            name: "format".into(),
-            ok: out.status.success(),
-            detail: tail(&combined(&out)),
-        }),
-        Err(err) => gates.push(Gate {
-            name: "format".into(),
-            ok: false,
-            detail: format!("could not run cargo fmt: {err}"),
-        }),
+    if let Some(format) = &language.gate.format {
+        gates.push(optional(root, "format", format));
     }
-
-    let mut check = Command::new("cargo");
-    check
-        .args(["check", "--all-targets", "--quiet"])
-        .current_dir(root);
-    let out = check.output().context("running cargo check")?;
-    gates.push(Gate {
-        name: "compile".into(),
-        ok: out.status.success(),
-        detail: tail(&combined(&out)),
-    });
-
+    gates.push(required(root, "compile", &language.gate.check)?);
     if with_tests {
-        let out = Command::new("cargo")
-            .args(["test", "--all-targets", "--quiet"])
-            .current_dir(root)
-            .output()
-            .context("running cargo test")?;
-        gates.push(Gate {
-            name: "tests".into(),
-            ok: out.status.success(),
-            detail: tail(&combined(&out)),
-        });
+        if let Some(test) = &language.gate.test {
+            gates.push(optional(root, "tests", test));
+        }
     }
 
     Ok(gates)
+}
+
+/// A command whose absence is not a failure: a formatter or a test runner that
+/// the machine does not have must not block a rewrite that otherwise compiles.
+fn optional(root: &Path, name: &str, spec: &CommandSpec) -> Gate {
+    match resolve(spec) {
+        Some((program, prefix)) => run_spec(root, name, spec, &program, prefix),
+        None => Gate {
+            name: name.into(),
+            ok: true,
+            detail: format!(
+                "skipped: none of {} is installed",
+                spec.programs
+                    .iter()
+                    .map(|candidate| candidate.join(" "))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+    }
+}
+
+/// A command the gate cannot do without.
+fn required(root: &Path, name: &str, spec: &CommandSpec) -> Result<Gate> {
+    let Some((program, prefix)) = resolve(spec) else {
+        let tried = spec
+            .programs
+            .iter()
+            .map(|candidate| candidate.join(" "))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Ok(Gate {
+            name: name.into(),
+            ok: false,
+            detail: format!(
+                "no {name} command found; tried {tried}. Install one, or the rewrite cannot be \
+                 verified and nothing will be written."
+            ),
+        });
+    };
+    Ok(run_spec(root, name, spec, &program, prefix))
+}
+
+fn run_spec(
+    root: &Path,
+    name: &str,
+    spec: &CommandSpec,
+    program: &str,
+    prefix: &'static [&'static str],
+) -> Gate {
+    // The prefix is the words before the program name, e.g. `py -3` is program
+    // `py` with the prefix `-3`; the version probe ran with both.
+    let mut command = Command::new(program);
+    command.args(prefix).args(spec.args).current_dir(root);
+    match command.output() {
+        Ok(out) => Gate {
+            name: name.into(),
+            ok: out.status.success(),
+            detail: tail(&combined(&out)),
+        },
+        Err(err) => Gate {
+            name: name.into(),
+            ok: false,
+            detail: format!("could not run {program}: {err}"),
+        },
+    }
+}
+
+/// Find the first candidate program that is installed. Returns the program and
+/// the words that must precede the arguments (for `py -3`, the `-3`).
+fn resolve(spec: &CommandSpec) -> Option<(String, &'static [&'static str])> {
+    for candidate in spec.programs {
+        let (program, prefix) = candidate.split_first()?;
+        let probe = Command::new(program).args(prefix).arg("--version").output();
+        if probe.is_ok_and(|out| out.status.success()) {
+            return Some(((*program).to_string(), prefix));
+        }
+    }
+    None
 }
 
 fn combined(out: &std::process::Output) -> String {

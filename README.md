@@ -35,6 +35,20 @@ The binary is self-contained: the recipe catalog is compiled into it.
 The one deliberate difference: OpenRewrite assumes type attribution everywhere. Rust recipes here are either syntax-scoped, where tree-sitter proves the match, or analyzer-backed, where rust-analyzer resolves the symbol. The compile gate catches what neither proves.
 That trade is why the gate is mandatory rather than optional.
 
+## Languages
+
+The engine, the recipe schema, the gate and the report are language-neutral. A language is a profile: which extensions are source, which grammar parses them, which marker file names a project of that language, and how the correctness gate proves a rewrite did not break it.
+
+| Language | Detected by | Gate |
+| --- | --- | --- |
+| Rust | `Cargo.toml` | `cargo fmt`, `cargo check`, optional `cargo test` |
+| Python | `pyproject.toml`, `setup.py`, `requirements.txt` | syntax check of every file (`ast.parse`, writes nothing), optional `ruff format`, optional `pytest` |
+| TypeScript | `tsconfig.json` | optional `prettier`, required `tsc --noEmit` |
+
+The project's language is detected from its root; `--language <id>` overrides it, and a repository carrying markers for two languages asks rather than guessing. `list` shows only the catalog for that language, and `list --json` reports the same.
+
+Two honest limits: Python has no compiler, so its gate proves syntax and not types — run `mypy` yourself if you need that; and a required gate command that is not installed fails the run rather than passing it silently, because an unverified rewrite is not a rewrite. Semantic recipes (rename, call-site argument rewriting) are still Rust-only: they need a language server per language, and only rust-analyzer is wired up.
+
 ## Commands
 
 | Command | What it does |

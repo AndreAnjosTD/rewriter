@@ -1,30 +1,44 @@
 //! Source discovery, diff rendering, and the working-tree safety check.
 
+use crate::language::{self, Language};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn rust_files(root: &Path) -> Result<Vec<PathBuf>> {
+/// Every source file of `language` under `root`, skipping dependency and build
+/// directories.
+pub fn source_files(root: &Path, language: &Language) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !(e.file_type().is_dir()
-            && (name == "target"
-                || name == "node_modules"
-                || name == ".git"
-                || (name.starts_with('.') && name != ".")))
-    }) {
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| {
+            if language::is_skipped(entry) {
+                return false;
+            }
+            // Hidden directories are caches and tool state, never project source.
+            let name = entry.file_name().to_string_lossy();
+            !(entry.file_type().is_dir() && name.starts_with('.') && name != ".")
+        })
+    {
         let entry = entry.with_context(|| format!("walking {}", root.display()))?;
-        if entry.file_type().is_file()
-            && entry.path().extension().and_then(|e| e.to_str()) == Some("rs")
-        {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let extension = entry.path().extension().and_then(|value| value.to_str());
+        if extension.is_some_and(|extension| language.extensions.contains(&extension)) {
             files.push(entry.into_path());
         }
     }
     files.sort();
     if files.is_empty() {
+        let extensions = language
+            .extensions
+            .iter()
+            .map(|extension| format!(".{extension}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
         anyhow::bail!(
-            "no .rs files under {} (run from a crate root, or pass --path)",
+            "no {extensions} files under {} (run from the project root, or pass --path)",
             root.display()
         );
     }

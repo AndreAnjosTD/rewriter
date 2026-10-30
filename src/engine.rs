@@ -1,6 +1,7 @@
 //! Rewrite engine: turns recipe steps into ast-grep rules, applies them to
 //! source text, and runs cargo-powered fixers.
 
+use crate::language::Language;
 use crate::recipes::{InsertWhere, Mode, Resolved, SemanticAction, Step, StepKind};
 use crate::util::line_column;
 use anyhow::{bail, Context, Result};
@@ -113,6 +114,8 @@ struct Insert {
     match_marker: String,
     /// The rule selecting nodes for `before-match` and `after-match`.
     matcher: Option<RuleConfig<SupportLang>>,
+    /// The grammar and import kinds this step's placement depends on.
+    language: &'static Language,
     filter: PathFilter,
 }
 
@@ -124,6 +127,9 @@ struct Insertion {
 }
 
 pub struct Engine {
+    /// The grammar every structural rule is matched against, and the language
+    /// whose import kinds the insert placements use.
+    language: &'static Language,
     compiled: Vec<Compiled>,
     insert_steps: Vec<Insert>,
     cargo_steps: Vec<(String, Vec<String>)>,
@@ -148,7 +154,7 @@ pub struct SemanticStep {
 }
 
 impl Engine {
-    pub fn compile(resolved: &[Resolved]) -> Result<Self> {
+    pub fn compile(resolved: &[Resolved], language: &'static Language) -> Result<Self> {
         let mut compiled = Vec::new();
         let mut insert_steps = Vec::new();
         let mut cargo_steps = Vec::new();
@@ -167,14 +173,15 @@ impl Engine {
                             .message
                             .clone()
                             .unwrap_or_else(|| resolved_step.name.clone());
-                        let cfg = build_rule(&resolved_step.recipe, &message, rule, fix, step)
-                            .with_context(|| {
-                                format!(
-                                    "compiling step {} of `{}`",
-                                    index + 1,
-                                    resolved_step.recipe
-                                )
-                            })?;
+                        let cfg =
+                            build_rule(&resolved_step.recipe, &message, language, rule, fix, step)
+                                .with_context(|| {
+                                    format!(
+                                        "compiling step {} of `{}`",
+                                        index + 1,
+                                        resolved_step.recipe
+                                    )
+                                })?;
                         compiled.push(Compiled {
                             recipe: resolved_step.recipe.clone(),
                             message,
@@ -214,8 +221,15 @@ impl Engine {
                                     .clone()
                                     .unwrap_or_else(|| resolved_step.name.clone());
                                 Some(
-                                    build_rule(&resolved_step.recipe, &message, rule, None, step)
-                                        .with_context(|| {
+                                    build_rule(
+                                        &resolved_step.recipe,
+                                        &message,
+                                        language,
+                                        rule,
+                                        None,
+                                        step,
+                                    )
+                                    .with_context(|| {
                                         format!(
                                             "compiling step {} of `{}`",
                                             index + 1,
@@ -237,6 +251,7 @@ impl Engine {
                             marker,
                             match_marker,
                             matcher,
+                            language,
                             filter: PathFilter::new(&step.include, &step.exclude)?,
                         });
                     }
@@ -293,6 +308,7 @@ impl Engine {
             }
         }
         Ok(Self {
+            language,
             compiled,
             insert_steps,
             cargo_steps,
@@ -318,7 +334,7 @@ impl Engine {
         let relative = relative_path(path, root);
         let mut findings = Vec::new();
         for compiled in self.compiled.iter().filter(|c| c.filter.allows(&relative)) {
-            let doc = SupportLang::Rust.ast_grep(text);
+            let doc = self.language.ast_grep.ast_grep(text);
             let mut last_end = 0usize;
             for m in doc.root().find_all(&compiled.cfg.matcher) {
                 let range = replace_range(compiled, &m, text);
@@ -351,7 +367,7 @@ impl Engine {
 
         let mut current = text.to_string();
         for _ in 0..8 {
-            let doc = SupportLang::Rust.ast_grep(&current);
+            let doc = self.language.ast_grep.ast_grep(&current);
             let mut edits: Vec<(Range<usize>, String)> = Vec::new();
             let mut last_end = 0usize;
             for compiled in self.compiled.iter().filter(|c| c.filter.allows(&relative)) {
@@ -469,18 +485,18 @@ impl Insert {
         // A `use` has a duplicate form the marker cannot see: a braced group
         // binds the same name without containing the inserted line.
         if let Some(name) = inserted_use_name(&self.body) {
-            if binds_name(text, name) {
+            if binds_name(text, name, self.language) {
                 return None;
             }
         }
         let (offset, block) = match self.at {
             InsertWhere::Top => (top_offset(text), format!("{}\n\n", self.body)),
-            InsertWhere::AfterUses => match last_use_end(text) {
+            InsertWhere::AfterUses => match last_use_end(text, self.language) {
                 Some(end) => {
                     let trailing = if end == text.len() { "\n" } else { "" };
                     (end, format!("\n{}{trailing}", self.body))
                 }
-                None => match first_item_start(text) {
+                None => match first_item_start(text, self.language) {
                     Some(start) => (start, format!("{}\n\n", self.body)),
                     // No use and no item: an empty or comment-only file.
                     None if text.is_empty() => (0, format!("{}\n", self.body)),
@@ -512,7 +528,7 @@ impl Insert {
             return None;
         }
         let window = self.body.lines().count().max(1);
-        let doc = SupportLang::Rust.ast_grep(text);
+        let doc = self.language.ast_grep.ast_grep(text);
         let mut insertions: Vec<Insertion> = Vec::new();
         for m in doc.root().find_all(&matcher.matcher) {
             let range = m.range();
@@ -625,19 +641,19 @@ fn top_offset(text: &str) -> usize {
 }
 
 /// End of the last top-level `use`, so the next import lands after it.
-fn last_use_end(text: &str) -> Option<usize> {
-    let doc = SupportLang::Rust.ast_grep(text);
+fn last_use_end(text: &str, language: &Language) -> Option<usize> {
+    let doc = language.ast_grep.ast_grep(text);
     doc.root()
         .named_children()
-        .filter(|node| node.kind() == "use_declaration")
+        .filter(|node| language.import_kinds.contains(&node.kind().as_ref()))
         .map(|node| node.range().end)
         .last()
 }
 
 /// Start of the first item, including the comments and attributes that belong
 /// to it, so an import does not split an item from its docs.
-fn first_item_start(text: &str) -> Option<usize> {
-    let doc = SupportLang::Rust.ast_grep(text);
+fn first_item_start(text: &str, language: &Language) -> Option<usize> {
+    let doc = language.ast_grep.ast_grep(text);
     let children: Vec<_> = doc.root().named_children().collect();
     let mut first = children.iter().position(|node| !is_trivia(node))?;
     while first > 0 {
@@ -656,10 +672,14 @@ fn first_item_start(text: &str) -> Option<usize> {
 }
 
 fn is_trivia(node: &ast_grep_core::Node<'_, StrDoc<SupportLang>>) -> bool {
-    matches!(
-        node.kind().as_ref(),
-        "line_comment" | "block_comment" | "attribute_item" | "inner_attribute_item"
-    )
+    // Comment kinds are named per grammar (`line_comment`, `comment`,
+    // `block_comment`); matching the suffix keeps this language-neutral.
+    let kind = node.kind();
+    kind.ends_with("comment")
+        || matches!(
+            kind.as_ref(),
+            "attribute_item" | "inner_attribute_item" | "decorator"
+        )
 }
 
 fn is_inner_doc(node: &ast_grep_core::Node<'_, StrDoc<SupportLang>>) -> bool {
@@ -691,12 +711,11 @@ fn inserted_use_name(body: &str) -> Option<&str> {
 /// path, because that is what catches `use a::{BTreeMap, HashMap};` and several
 /// declarations in one statement. An alias is the exception: `use a::Bar as Baz`
 /// binds `Baz`, not `Bar`, so the alias is the only name that counts there.
-fn binds_name(text: &str, name: &str) -> bool {
-    let doc = SupportLang::Rust.ast_grep(text);
-    let found = doc
-        .root()
-        .dfs()
-        .any(|node| node.kind() == "use_declaration" && binds_inside(&node, name));
+fn binds_name(text: &str, name: &str, language: &Language) -> bool {
+    let doc = language.ast_grep.ast_grep(text);
+    let found = doc.root().dfs().any(|node| {
+        language.import_kinds.contains(&node.kind().as_ref()) && binds_inside(&node, name)
+    });
     found
 }
 
@@ -768,6 +787,7 @@ fn whole_line_if_alone(text: &str, range: Range<usize>) -> Range<usize> {
 fn build_rule(
     id: &str,
     name: &str,
+    language: &Language,
     rule: &serde_yaml::Value,
     fix: Option<&str>,
     step: &Step,
@@ -777,7 +797,11 @@ fn build_rule(
     yaml.push_str(&scalar(id));
     yaml.push_str("\nmessage: ");
     yaml.push_str(&scalar(name));
-    yaml.push_str("\nseverity: info\nlanguage: rust\n");
+    // The grammar the rule is parsed against. A Rust pattern interpreted by the
+    // Python grammar matches nothing at all, and says so only by silence.
+    yaml.push_str("\nseverity: info\nlanguage: ");
+    yaml.push_str(language.id);
+    yaml.push('\n');
     if let Some(fix) = fix {
         yaml.push_str("fix: ");
         yaml.push_str(&scalar(fix));
@@ -834,8 +858,12 @@ fn indent(text: &str, width: usize) -> String {
 
 /// Apply a recipe's structural steps to a snippet, for recipe self-tests and
 /// `explain`. Cargo steps are ignored here by design.
-pub fn apply_to_snippet(resolved: &Resolved, before: &str) -> Result<String> {
-    let engine = Engine::compile(std::slice::from_ref(resolved))?;
-    let (after, _) = engine.rewrite(before, Path::new("snippet.rs"), Path::new(""))?;
+pub fn apply_to_snippet(
+    resolved: &Resolved,
+    before: &str,
+    language: &'static Language,
+) -> Result<String> {
+    let engine = Engine::compile(std::slice::from_ref(resolved), language)?;
+    let (after, _) = engine.rewrite(before, Path::new("snippet.txt"), Path::new(""))?;
     Ok(after)
 }

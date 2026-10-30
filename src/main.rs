@@ -7,6 +7,7 @@
 mod callsites;
 mod daemon;
 mod engine;
+mod language;
 mod recipes;
 mod report;
 mod semantic;
@@ -43,6 +44,10 @@ struct Cli {
     /// `.rustrewrite/recipes` is loaded automatically.
     #[arg(long, global = true)]
     recipes: Vec<PathBuf>,
+
+    /// Language of the project. Detected from the root when omitted.
+    #[arg(long, global = true, value_name = "ID")]
+    language: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -205,14 +210,23 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     let root = absolute(&cli.path)?;
+    // The project decides its language; the flag is for a repository that is
+    // genuinely mixed, and for running one language's catalog over another
+    // checkout on purpose.
+    let language = match &cli.language {
+        Some(id) => language::by_id(id)?,
+        None => language::detect(&root)?,
+    };
     // Loaded per command: `serve`, `verify` and `rename` do not read recipes, and
     // a warm server should not wait on a recipe scan it never uses.
     let catalog = || Catalog::load(&cli.recipes, &root);
 
     match cli.command {
-        Command::List { tag, sources, json } => list(&catalog()?, tag.as_deref(), sources, json),
-        Command::Explain { recipe } => explain(&catalog()?, &recipe),
-        Command::Test { recipe } => test_examples(&catalog()?, recipe.as_deref()),
+        Command::List { tag, sources, json } => {
+            list(&catalog()?, tag.as_deref(), sources, json, language)
+        }
+        Command::Explain { recipe } => explain(&catalog()?, &recipe, language),
+        Command::Test { recipe } => test_examples(&catalog()?, recipe.as_deref(), language),
         Command::Check {
             recipe,
             diff,
@@ -228,6 +242,7 @@ fn run(cli: Cli) -> Result<()> {
             json,
             &options,
             AnalyzerOpts { wait, warm: !cold },
+            language,
         ),
         Command::Run {
             recipe,
@@ -252,8 +267,9 @@ fn run(cli: Cli) -> Result<()> {
             json,
             &options,
             AnalyzerOpts { wait, warm: !cold },
+            language,
         ),
-        Command::Verify { test } => verify_only(&root, test),
+        Command::Verify { test } => verify_only(&root, test, language),
         Command::Rename {
             at,
             to,
@@ -272,8 +288,9 @@ fn run(cli: Cli) -> Result<()> {
             allow_dirty,
             json,
             AnalyzerOpts { wait, warm: !cold },
+            language,
         ),
-        Command::Serve { stop, status, idle } => serve_command(&root, stop, status, idle),
+        Command::Serve { stop, status, idle } => serve_command(&root, stop, status, idle, language),
     }
 }
 
@@ -298,9 +315,16 @@ fn resolve_example(resolved: &Resolved, example: &recipes::Example) -> Result<Re
     Ok(one)
 }
 
-fn list(catalog: &Catalog, tag: Option<&str>, sources: bool, json: bool) -> Result<()> {
+fn list(
+    catalog: &Catalog,
+    tag: Option<&str>,
+    sources: bool,
+    json: bool,
+    language: &'static language::Language,
+) -> Result<()> {
     let selected: Vec<&recipes::Recipe> = catalog
         .all()
+        .filter(|recipe| language::recipe_applies(recipe.language.as_deref(), language))
         .filter(|recipe| match tag {
             Some(tag) => recipe.tags.iter().any(|t| t == tag),
             None => true,
@@ -309,6 +333,12 @@ fn list(catalog: &Catalog, tag: Option<&str>, sources: bool, json: bool) -> Resu
     if json {
         println!("{}", report::catalog(&selected));
         return Ok(());
+    }
+    if selected.is_empty() {
+        println!(
+            "no recipes for {} in this catalog; pass --language <id> to list another language",
+            language.name
+        );
     }
 
     let mut any = false;
@@ -361,7 +391,7 @@ fn list(catalog: &Catalog, tag: Option<&str>, sources: bool, json: bool) -> Resu
     Ok(())
 }
 
-fn explain(catalog: &Catalog, selector: &str) -> Result<()> {
+fn explain(catalog: &Catalog, selector: &str, language: &'static language::Language) -> Result<()> {
     let selected = catalog.select(selector)?;
     if selected.len() != 1 {
         bail!(
@@ -409,7 +439,11 @@ fn explain(catalog: &Catalog, selector: &str) -> Result<()> {
         for (index, example) in recipe.examples.iter().enumerate() {
             let example_resolved = resolve_example(&resolved, example)
                 .with_context(|| format!("example {}", index + 1))?;
-            let got = apply_to_snippet(&example_resolved, &example.before)?;
+            let got = apply_to_snippet(
+                &example_resolved,
+                &example.before,
+                language_of(recipe, language),
+            )?;
             let ok = got == example.after;
             let status = if ok { "PASS" } else { "FAIL" };
             println!("  [{status}] example {}", index + 1);
@@ -446,7 +480,11 @@ fn explain(catalog: &Catalog, selector: &str) -> Result<()> {
     Ok(())
 }
 
-fn test_examples(catalog: &Catalog, selector: Option<&str>) -> Result<()> {
+fn test_examples(
+    catalog: &Catalog,
+    selector: Option<&str>,
+    language: &'static language::Language,
+) -> Result<()> {
     let recipes: Vec<_> = match selector {
         Some(selector) => catalog.select(selector)?,
         None => catalog.all().collect(),
@@ -480,7 +518,11 @@ fn test_examples(catalog: &Catalog, selector: Option<&str>) -> Result<()> {
         for (index, example) in resolved.recipe.examples.iter().enumerate() {
             let example_resolved = resolve_example(&resolved, example)
                 .with_context(|| format!("example {}", index + 1))?;
-            let got = apply_to_snippet(&example_resolved, &example.before)?;
+            let got = apply_to_snippet(
+                &example_resolved,
+                &example.before,
+                language_of(recipe, language),
+            )?;
             if got == example.after {
                 passed += 1;
             } else {
@@ -508,12 +550,13 @@ fn check(
     json: bool,
     options: &[String],
     analyzer_opts: AnalyzerOpts,
+    language: &'static language::Language,
 ) -> Result<()> {
     let label = selectors.join(",");
     let flags = recipe_flags(selectors);
-    let resolved = resolve_selectors(catalog, selectors, options)?;
-    let engine = Engine::compile(&resolved)?;
-    let files = util::rust_files(root)?;
+    let resolved = resolve_selectors(catalog, selectors, options, language)?;
+    let engine = Engine::compile(&resolved, language)?;
+    let files = util::source_files(root, language)?;
 
     let mut findings: Vec<Finding> = Vec::new();
     let mut pending: Vec<(PathBuf, String, String)> = Vec::new();
@@ -531,7 +574,13 @@ fn check(
     }
 
     if engine.has_semantic_steps() {
-        let outcome = run_semantic(root, engine.semantic_steps(), false, analyzer_opts)?;
+        let outcome = run_semantic(
+            root,
+            engine.semantic_steps(),
+            false,
+            analyzer_opts,
+            language,
+        )?;
         findings.extend(outcome.findings);
         changed_files += outcome.writes.len();
         pending.extend(outcome.writes);
@@ -652,11 +701,12 @@ fn resolve_selectors(
     catalog: &Catalog,
     selectors: &[String],
     options: &[String],
+    language: &'static language::Language,
 ) -> Result<Vec<Resolved>> {
     let mut resolved = Vec::new();
     let mut covered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for selector in selectors {
-        for one in resolve_selector(catalog, selector, options)? {
+        for one in resolve_selector(catalog, selector, options, language)? {
             let leaves: std::collections::BTreeSet<String> =
                 one.steps.iter().map(|step| step.recipe.clone()).collect();
             if leaves.is_empty() || leaves.iter().all(|leaf| covered.contains(leaf)) {
@@ -674,6 +724,18 @@ fn resolve_selectors(
 
 /// `--recipe a --recipe b`, for a message that tells the caller how to repeat a
 /// batch command.
+/// The grammar a recipe's own examples should be parsed with.
+fn language_of(
+    recipe: &recipes::Recipe,
+    fallback: &'static language::Language,
+) -> &'static language::Language {
+    recipe
+        .language
+        .as_deref()
+        .and_then(|id| language::by_id(id).ok())
+        .unwrap_or(fallback)
+}
+
 fn recipe_flags(selectors: &[String]) -> String {
     selectors
         .iter()
@@ -686,17 +748,28 @@ fn resolve_selector(
     catalog: &Catalog,
     selector: &str,
     options: &[String],
+    language: &'static language::Language,
 ) -> Result<Vec<Resolved>> {
     let provided = parse_options(options)?;
     let selected = catalog.select(selector)?;
     let mut resolved = Vec::new();
     for recipe in selected {
+        if !language::recipe_applies(recipe.language.as_deref(), language) {
+            bail!(
+                "recipe `{}` targets {}, but this project is {}; pass --language {} to run it \
+                 anyway",
+                recipe.id,
+                recipe.language.as_deref().unwrap_or("another language"),
+                language.name,
+                recipe.language.as_deref().unwrap_or("<id>")
+            );
+        }
         let mut one = catalog.resolve(recipe)?;
         recipes::apply_options(&mut one, &provided)?;
         resolved.push(one);
     }
     if resolved.is_empty() {
-        bail!("`{selector}` matched no recipes");
+        bail!("`{selector}` matched no recipes for {}", language.name);
     }
     Ok(resolved)
 }
@@ -760,6 +833,7 @@ fn run_semantic(
     steps: &[SemanticStep],
     write: bool,
     opts: AnalyzerOpts,
+    language: &'static language::Language,
 ) -> Result<SemanticOutcome> {
     let mut outcome = SemanticOutcome {
         findings: Vec::new(),
@@ -769,6 +843,15 @@ fn run_semantic(
         // Nothing semantic to ask: do not start an analyzer at all. This is what
         // keeps a structural run at structural speed.
         return Ok(outcome);
+    }
+    if language.id != "rust" {
+        // The semantic steps are resolved by rust-analyzer against Rust node
+        // kinds; another language needs its own server before they mean
+        // anything here.
+        bail!(
+            "semantic steps are implemented for Rust only; {} has no language server wired up yet",
+            language.name
+        );
     }
 
     // A change-return-type step edits the declaration without asking the server
@@ -1304,11 +1387,12 @@ fn run_recipes(
     json: bool,
     options: &[String],
     analyzer_opts: AnalyzerOpts,
+    language: &'static language::Language,
 ) -> Result<()> {
     let label = selectors.join(",");
-    let resolved = resolve_selectors(catalog, selectors, options)?;
-    let engine = Engine::compile(&resolved)?;
-    let files = util::rust_files(root)?;
+    let resolved = resolve_selectors(catalog, selectors, options, language)?;
+    let engine = Engine::compile(&resolved, language)?;
+    let files = util::source_files(root, language)?;
 
     if apply {
         if let Some(false) = util::git_clean(root) {
@@ -1323,7 +1407,7 @@ fn run_recipes(
     }
 
     let snapshot = if apply {
-        Some(verify::Snapshot::take(root)?)
+        Some(verify::Snapshot::take(root, language)?)
     } else {
         None
     };
@@ -1352,7 +1436,13 @@ fn run_recipes(
     // Semantic steps run after structural edits are on disk, because the
     // language server resolves positions against files, not against our buffers.
     if engine.has_semantic_steps() {
-        let outcome = run_semantic(root, engine.semantic_steps(), apply, analyzer_opts)?;
+        let outcome = run_semantic(
+            root,
+            engine.semantic_steps(),
+            apply,
+            analyzer_opts,
+            language,
+        )?;
         findings.extend(outcome.findings);
         writes.extend(outcome.writes);
     }
@@ -1446,7 +1536,7 @@ fn run_recipes(
     let mut gates = None;
     if verify_after {
         human(json, "running the correctness gate...");
-        let results = verify::run(root, with_tests)?;
+        let results = verify::run(root, language, with_tests)?;
         let mut failed = Vec::new();
         for gate in &results {
             human(
@@ -1509,8 +1599,8 @@ fn run_recipes(
     Ok(())
 }
 
-fn verify_only(root: &Path, with_tests: bool) -> Result<()> {
-    let gates = verify::run(root, with_tests)?;
+fn verify_only(root: &Path, with_tests: bool, language: &'static language::Language) -> Result<()> {
+    let gates = verify::run(root, language, with_tests)?;
     let mut ok = true;
     for gate in &gates {
         println!("{:<8} {}", gate.name, if gate.ok { "ok" } else { "FAILED" });
@@ -1550,7 +1640,14 @@ fn rename_symbol(
     allow_dirty: bool,
     json: bool,
     opts: AnalyzerOpts,
+    language: &'static language::Language,
 ) -> Result<()> {
+    if language.id != "rust" {
+        bail!(
+            "rename is resolved by rust-analyzer; {} has no language server wired up yet",
+            language.name
+        );
+    }
     let (file, line, column) = parse_location(at)?;
     let root = util::normalize_path(root)?;
     let file = if file.is_absolute() {
@@ -1580,7 +1677,7 @@ fn rename_symbol(
         }
     }
     let snapshot = if apply {
-        Some(verify::Snapshot::take(&root)?)
+        Some(verify::Snapshot::take(&root, language)?)
     } else {
         None
     };
@@ -1711,7 +1808,7 @@ fn rename_symbol(
     let mut gates = None;
     if verify_after {
         human(json, "running the correctness gate...");
-        let results = verify::run(&root, false)?;
+        let results = verify::run(&root, language, false)?;
         let mut failed = Vec::new();
         for gate in &results {
             human(
@@ -1761,7 +1858,19 @@ fn rename_symbol(
     Ok(())
 }
 
-fn serve_command(root: &Path, stop: bool, status: bool, idle_secs: u64) -> Result<()> {
+fn serve_command(
+    root: &Path,
+    stop: bool,
+    status: bool,
+    idle_secs: u64,
+    language: &'static language::Language,
+) -> Result<()> {
+    if language.id != "rust" {
+        bail!(
+            "the warm analyzer and rename need a Rust language server; {} has none yet",
+            language.name
+        );
+    }
     if stop {
         if daemon::stop(root)? {
             println!("stopped the warm server for {}", root.display());

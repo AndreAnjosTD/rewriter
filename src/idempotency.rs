@@ -49,13 +49,19 @@ fn every_fix_recipe_example_is_idempotent() {
             // Resolving the example the way `test_examples` resolves a recipe
             // flattens a composite into its children's steps.
             let resolved = resolve_example(&catalog, &recipe.id, example);
-            let again = apply_to_snippet(&resolved, &example.after).unwrap_or_else(|err| {
-                panic!(
-                    "applying `{}` example {} again: {err:#}",
-                    recipe.id,
-                    index + 1
-                )
-            });
+            let language = recipe
+                .language
+                .as_deref()
+                .and_then(|id| crate::language::by_id(id).ok())
+                .unwrap_or(&crate::language::RUST);
+            let again =
+                apply_to_snippet(&resolved, &example.after, language).unwrap_or_else(|err| {
+                    panic!(
+                        "applying `{}` example {} again: {err:#}",
+                        recipe.id,
+                        index + 1
+                    )
+                });
             examples_checked += 1;
             if again != example.after {
                 failures.push(format!(

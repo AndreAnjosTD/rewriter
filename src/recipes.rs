@@ -195,6 +195,11 @@ pub struct Recipe {
     /// stamp, not a mechanical fix that is safe to sweep everywhere.
     #[serde(default, rename = "opt-in")]
     pub opt_in: bool,
+    /// Language namespace this recipe belongs to. Left out, it is inferred from
+    /// the id's first segment when that names a known language; a local recipe
+    /// with its own namespace stays generic and runs on any project.
+    #[serde(default)]
+    pub language: Option<String>,
     /// Composite: ids of recipes to run, in order.
     #[serde(default)]
     pub recipes: Vec<String>,
@@ -295,6 +300,20 @@ impl Catalog {
                 recipe.id,
                 recipe.source
             );
+        }
+        // The id's namespace names the language unless the recipe says
+        // otherwise; `rust.idioms` is Rust, `myproject.migrate` is generic.
+        let mut recipe = recipe;
+        if recipe.language.is_none() {
+            if let Some(namespace) = recipe.id.split('.').next() {
+                if crate::language::by_id(namespace).is_ok() {
+                    recipe.language = Some(namespace.to_string());
+                }
+            }
+        }
+        if let Some(id) = &recipe.language {
+            crate::language::by_id(id)
+                .with_context(|| format!("recipe `{}` names language `{id}`", recipe.id))?;
         }
         if recipe.steps.is_empty() && recipe.recipes.is_empty() {
             bail!("recipe `{}` has no steps and no sub-recipes", recipe.id);
