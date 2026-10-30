@@ -845,6 +845,11 @@ impl RustrewriteApp {
             self.findings_table(&mut columns[0], height);
             self.diff_view(&mut columns[1], height);
         });
+        // A resizable panel is sized by its content, so the content has to claim
+        // the whole panel. Without this the two panes take only as much height
+        // as their rows need, the panel shrinks to fit on the next frame, and
+        // the divider walks down the window on every repaint.
+        ui.take_available_space();
     }
 
     fn findings_table(&mut self, ui: &mut egui::Ui, height: f32) {
@@ -857,12 +862,10 @@ impl RustrewriteApp {
         let mut pick = None;
         let selected = self.selected_diff.clone();
         let body_height = (height - 28.0).max(60.0);
-        // Columns are not draggable on purpose. The cell text is already
-        // truncated with the full value on hover, and a resize handle sitting
-        // this close to the panel's edge made a column drag start a panel drag.
         TableBuilder::new(ui)
             .id_salt("findings_table")
             .striped(true)
+            .resizable(true)
             .max_scroll_height(body_height)
             .column(Column::initial(150.0).at_least(90.0).clip(true))
             .column(Column::initial(170.0).at_least(90.0).clip(true))
