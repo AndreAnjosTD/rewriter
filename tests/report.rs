@@ -386,3 +386,82 @@ fn a_diff_is_a_record_of_its_own() {
         "the diff must not leak the absolute path: {text}"
     );
 }
+#[test]
+fn several_recipes_run_in_one_pass() {
+    let dir = fixture("demo-crate", "batch");
+    let output = run(
+        &[
+            "check",
+            "--recipe",
+            "rust.idiom.string-len-zero",
+            "--recipe",
+            "rust.idiom.bool-compare",
+            "--json",
+        ],
+        &dir,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "check exits 1 with findings:\n{}",
+        stderr(&output)
+    );
+
+    let values = lines(&output);
+    let summary = values
+        .iter()
+        .find(|value| value["type"] == "summary")
+        .expect("a summary line");
+    assert_eq!(
+        summary["recipe"], "rust.idiom.string-len-zero,rust.idiom.bool-compare",
+        "the summary names every selector: {summary}"
+    );
+    for recipe in ["rust.idiom.string-len-zero", "rust.idiom.bool-compare"] {
+        assert!(
+            values.iter().any(|value| value["recipe"] == recipe),
+            "expected a finding from {recipe}: {values:?}"
+        );
+    }
+}
+
+#[test]
+fn a_batch_does_not_run_a_member_twice() {
+    let dir = fixture("demo-crate", "batch-duplicate");
+    let alone = run(&["check", "--recipe", "rust.idioms", "--json"], &dir);
+    let batched = run(
+        &[
+            "check",
+            "--recipe",
+            "rust.idioms",
+            "--recipe",
+            "rust.idiom.string-len-zero",
+            "--json",
+        ],
+        &dir,
+    );
+
+    // The same findings, not merely the same count: a recipe with two patterns
+    // must keep both, and the member must not be reported a second time.
+    let findings = |output: &Output| {
+        lines(output)
+            .into_iter()
+            .filter(|value| value["type"] == "finding")
+            .map(|value| {
+                format!(
+                    "{}:{}:{} {} -> {}",
+                    value["file"], value["line"], value["column"], value["recipe"], value["before"]
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let alone_findings = findings(&alone);
+    assert!(
+        alone_findings.len() > 1,
+        "the fixture must produce several findings: {alone_findings:?}"
+    );
+    assert_eq!(
+        findings(&batched),
+        alone_findings,
+        "batching a composite with one of its members must change nothing"
+    );
+}

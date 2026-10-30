@@ -72,9 +72,10 @@ enum Command {
     },
     /// Report what a recipe would change. Never writes.
     Check {
-        /// Recipe id, namespace prefix, or `all`.
-        #[arg(short, long, default_value = "all")]
-        recipe: String,
+        /// Recipe id, namespace prefix, or `all`. Repeat to run several in one
+        /// pass, which shares one scan and one gate.
+        #[arg(short, long, default_value = "all", action = clap::ArgAction::Append)]
+        recipe: Vec<String>,
         /// Print a unified diff of the pending changes.
         #[arg(long)]
         diff: bool,
@@ -93,9 +94,10 @@ enum Command {
     },
     /// Apply a recipe.
     Run {
-        /// Recipe id, namespace prefix, or `all`.
-        #[arg(short, long, default_value = "all")]
-        recipe: String,
+        /// Recipe id, namespace prefix, or `all`. Repeat to run several in one
+        /// pass, which shares one scan and one gate.
+        #[arg(short, long, default_value = "all", action = clap::ArgAction::Append)]
+        recipe: Vec<String>,
         /// Write changes. Without this, run is a dry run.
         #[arg(long)]
         apply: bool,
@@ -501,13 +503,15 @@ fn test_examples(catalog: &Catalog, selector: Option<&str>) -> Result<()> {
 fn check(
     catalog: &Catalog,
     root: &Path,
-    selector: &str,
+    selectors: &[String],
     show_diff: bool,
     json: bool,
     options: &[String],
     analyzer_opts: AnalyzerOpts,
 ) -> Result<()> {
-    let resolved = resolve_selector(catalog, selector, options)?;
+    let label = selectors.join(",");
+    let flags = recipe_flags(selectors);
+    let resolved = resolve_selectors(catalog, selectors, options)?;
     let engine = Engine::compile(&resolved)?;
     let files = util::rust_files(root)?;
 
@@ -562,7 +566,7 @@ fn check(
             "{}",
             report::Summary {
                 command: "check",
-                recipe: Some(selector),
+                recipe: Some(&label),
                 findings: findings.len(),
                 files: distinct_files(&findings),
                 changed: changed_files > 0,
@@ -574,7 +578,7 @@ fn check(
     } else {
         println!();
         if findings.is_empty() {
-            println!("no findings for {selector} in {}", root.display());
+            println!("no findings for {label} in {}", root.display());
         } else {
             println!(
                 "{} finding(s) in {} file(s); {} file(s) would change",
@@ -592,7 +596,7 @@ fn check(
                     }
                 })
                 .collect::<String>();
-            println!("write them with: rustrewrite run --recipe {selector} --apply{supplied}");
+            println!("write them with: rustrewrite run {flags} --apply{supplied}");
         }
     }
 
@@ -633,6 +637,49 @@ fn distinct_files(findings: &[Finding]) -> usize {
         set.insert(&finding.path);
     }
     set.len()
+}
+
+/// Resolve every selector into one list of recipes, keeping each recipe's steps
+/// only once.
+///
+/// A batch pays one scan and one gate, so a duplicate selection — `rust.idioms`
+/// plus one of its members, say — must not run that member twice and report the
+/// same finding twice. The check is per resolved recipe, keyed by the leaf
+/// recipes it contributes: a recipe can have several steps of its own (two
+/// patterns for one idiom), so dropping individual steps by recipe id would
+/// silently discard the second one.
+fn resolve_selectors(
+    catalog: &Catalog,
+    selectors: &[String],
+    options: &[String],
+) -> Result<Vec<Resolved>> {
+    let mut resolved = Vec::new();
+    let mut covered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for selector in selectors {
+        for one in resolve_selector(catalog, selector, options)? {
+            let leaves: std::collections::BTreeSet<String> =
+                one.steps.iter().map(|step| step.recipe.clone()).collect();
+            if leaves.is_empty() || leaves.iter().all(|leaf| covered.contains(leaf)) {
+                continue;
+            }
+            covered.extend(leaves);
+            resolved.push(one);
+        }
+    }
+    if resolved.is_empty() {
+        bail!("no recipes matched: {}", selectors.join(","));
+    }
+    Ok(resolved)
+}
+
+/// `--recipe a --recipe b`, for a message that tells the caller how to repeat a
+/// batch command.
+fn recipe_flags(selectors: &[String]) -> String {
+    selectors
+        .iter()
+        .map(|selector| format!("--recipe {selector}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn resolve_selector(
@@ -1248,7 +1295,7 @@ fn line_start(text: &str, index: usize) -> Option<usize> {
 fn run_recipes(
     catalog: &Catalog,
     root: &Path,
-    selector: &str,
+    selectors: &[String],
     apply: bool,
     verify_after: bool,
     with_tests: bool,
@@ -1258,7 +1305,8 @@ fn run_recipes(
     options: &[String],
     analyzer_opts: AnalyzerOpts,
 ) -> Result<()> {
-    let resolved = resolve_selector(catalog, selector, options)?;
+    let label = selectors.join(",");
+    let resolved = resolve_selectors(catalog, selectors, options)?;
     let engine = Engine::compile(&resolved)?;
     let files = util::rust_files(root)?;
 
@@ -1352,7 +1400,7 @@ fn run_recipes(
         human(
             json,
             format!(
-                "dry run: {} change(s) across {} file(s) for {selector}",
+                "dry run: {} change(s) across {} file(s) for {label}",
                 findings.len(),
                 writes.len()
             ),
@@ -1366,7 +1414,7 @@ fn run_recipes(
                 "{}",
                 report::Summary {
                     command: "run",
-                    recipe: Some(selector),
+                    recipe: Some(&label),
                     findings: findings.len(),
                     files,
                     changed,
@@ -1380,12 +1428,12 @@ fn run_recipes(
     }
     human(json, "");
     if writes.is_empty() {
-        human(json, format!("no changes to write for {selector}"));
+        human(json, format!("no changes to write for {label}"));
     } else {
         human(
             json,
             format!(
-                "applied {} change(s) across {} file(s) for {selector}",
+                "applied {} change(s) across {} file(s) for {label}",
                 findings.len(),
                 writes.len()
             ),
@@ -1447,7 +1495,7 @@ fn run_recipes(
             "{}",
             report::Summary {
                 command: "run",
-                recipe: Some(selector),
+                recipe: Some(&label),
                 findings: findings.len(),
                 files,
                 changed,

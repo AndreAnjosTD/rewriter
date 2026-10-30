@@ -51,6 +51,14 @@ That trade is why the gate is mandatory rather than optional.
 Recipes that take parameters accept `--set key=value`, repeatable, on `check` and `run`.
 
 `--recipe` accepts an id, a namespace prefix (`rust.idiom` selects the whole pack), or `all`.
+Repeat it to run several recipes in one pass, which shares one scan and one compile gate instead of paying for each recipe separately:
+
+```
+rustrewrite run --recipe rust.idioms --recipe rust.migrate.add-license-header --apply
+```
+
+A selector whose steps another selector already contributed is not run twice, so `--recipe rust.idioms --recipe rust.idiom.string-len-zero` reports the same findings as `rust.idioms` alone.
+Recipes that declare a required option cannot be batched, because one `--set` map is shared by the whole invocation.
 
 ## The desktop app
 
