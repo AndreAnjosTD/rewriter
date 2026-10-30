@@ -308,3 +308,81 @@ fn json_failure_ends_with_an_error_object() {
         "the error must carry the reason: {last}"
     );
 }
+
+#[test]
+fn the_catalog_is_one_record_with_options() {
+    let dir = fixture("demo-crate", "catalog");
+    let output = run(&["list", "--json"], &dir);
+    assert!(output.status.success(), "list failed:\n{}", stderr(&output));
+
+    let values = lines(&output);
+    assert_eq!(
+        values.len(),
+        1,
+        "the catalog is a single record: {values:?}"
+    );
+    let catalog = &values[0];
+    assert_eq!(catalog["type"], "catalog");
+
+    let recipes = catalog["recipes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a recipes array: {catalog}"));
+    assert!(recipes.len() > 20, "the built-in catalog is not empty");
+
+    let add_import = recipes
+        .iter()
+        .find(|recipe| recipe["id"] == "rust.migrate.add-import")
+        .unwrap_or_else(|| panic!("add-import must be in the catalog"));
+    assert_eq!(add_import["kind"], "fix");
+    assert_eq!(add_import["options"]["path"]["required"], true);
+    assert!(
+        add_import["options"]["path"]["default"].is_null(),
+        "a required option has no default: {add_import}"
+    );
+
+    let header = recipes
+        .iter()
+        .find(|recipe| recipe["id"] == "rust.migrate.add-license-header")
+        .expect("add-license-header must be in the catalog");
+    assert_eq!(
+        header["options"]["header"]["default"], "// SPDX-License-Identifier: MIT",
+        "the declared default must reach the caller: {header}"
+    );
+}
+
+#[test]
+fn a_diff_is_a_record_of_its_own() {
+    let dir = fixture("demo-crate", "diff");
+    let output = run(
+        &["check", "--recipe", "rust.idioms", "--json", "--diff"],
+        &dir,
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "check exits 1 with findings:\n{}",
+        stderr(&output)
+    );
+
+    let values = lines(&output);
+    let diffs: Vec<&Value> = values
+        .iter()
+        .filter(|value| value["type"] == "diff")
+        .collect();
+    assert!(!diffs.is_empty(), "expected a diff record: {values:?}");
+    let first = diffs[0];
+    assert_eq!(
+        first["file"], "src/main.rs",
+        "the diff names the file relative to the root: {first}"
+    );
+    let text = first["text"].as_str().expect("diff text");
+    assert!(text.starts_with("--- "), "unified diff headers: {text}");
+    assert!(
+        text.contains("-") && text.contains("+"),
+        "the diff must show both sides: {text}"
+    );
+    assert!(
+        !text.contains(dir.display().to_string().as_str()),
+        "the diff must not leak the absolute path: {text}"
+    );
+}

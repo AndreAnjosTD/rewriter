@@ -718,7 +718,10 @@ impl Server {
             }
             if std::env::var_os("RUSTREWRITE_TRACE").is_some() {
                 let shown: String = value.to_string().chars().take(600).collect();
-                eprintln!("[trace] resolve `{}` had no edit yet: {shown}", action.title);
+                eprintln!(
+                    "[trace] resolve `{}` had no edit yet: {shown}",
+                    action.title
+                );
             }
             if Instant::now() >= deadline {
                 return Ok(Vec::new());

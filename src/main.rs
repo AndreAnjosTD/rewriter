@@ -20,7 +20,7 @@ mod idempotency;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use engine::{apply_to_snippet, Engine, Finding, SemanticStep};
-use recipes::{Catalog, Mode, Resolved, SemanticAction};
+use recipes::{Catalog, Resolved, SemanticAction};
 use semantic::{Analyzer, Server};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -58,6 +58,9 @@ enum Command {
         /// Show where each recipe was loaded from.
         #[arg(long)]
         sources: bool,
+        /// Machine-readable catalog: one record, with every option and default.
+        #[arg(long)]
+        json: bool,
     },
     /// Explain one recipe, and run its examples as a proof.
     Explain { recipe: String },
@@ -205,7 +208,7 @@ fn run(cli: Cli) -> Result<()> {
     let catalog = || Catalog::load(&cli.recipes, &root);
 
     match cli.command {
-        Command::List { tag, sources } => list(&catalog()?, tag.as_deref(), sources),
+        Command::List { tag, sources, json } => list(&catalog()?, tag.as_deref(), sources, json),
         Command::Explain { recipe } => explain(&catalog()?, &recipe),
         Command::Test { recipe } => test_examples(&catalog()?, recipe.as_deref()),
         Command::Check {
@@ -293,23 +296,23 @@ fn resolve_example(resolved: &Resolved, example: &recipes::Example) -> Result<Re
     Ok(one)
 }
 
-fn list(catalog: &Catalog, tag: Option<&str>, sources: bool) -> Result<()> {
+fn list(catalog: &Catalog, tag: Option<&str>, sources: bool, json: bool) -> Result<()> {
+    let selected: Vec<&recipes::Recipe> = catalog
+        .all()
+        .filter(|recipe| match tag {
+            Some(tag) => recipe.tags.iter().any(|t| t == tag),
+            None => true,
+        })
+        .collect();
+    if json {
+        println!("{}", report::catalog(&selected));
+        return Ok(());
+    }
+
     let mut any = false;
-    for recipe in catalog.all() {
-        if let Some(tag) = tag {
-            if !recipe.tags.iter().any(|t| t == tag) {
-                continue;
-            }
-        }
+    for recipe in selected {
         any = true;
-        let kind = if !recipe.recipes.is_empty() {
-            "composite"
-        } else {
-            match recipe.mode {
-                Mode::Fix => "fix",
-                Mode::Scan => "scan",
-            }
-        };
+        let kind = report::kind(recipe);
         let tags = if recipe.tags.is_empty() {
             String::new()
         } else {
@@ -550,10 +553,7 @@ fn check(
 
     if show_diff {
         for (path, old, new) in &pending {
-            human_raw(
-                json,
-                &util::unified_diff(old, new, &path.display().to_string()),
-            );
+            print_diff(json, root, path, old, new);
         }
     }
 
@@ -612,10 +612,16 @@ fn human(json: bool, text: impl std::fmt::Display) {
     }
 }
 
-/// The same, for text that already carries its own line endings (diffs).
-fn human_raw(json: bool, text: &str) {
+/// A diff as a JSON record when the caller asked for JSON, otherwise as text.
+///
+/// JSON consumers get the diff as data, not as stderr mixed into the log.
+fn print_diff(json: bool, root: &Path, path: &Path, old: &str, new: &str) {
+    // Relative in both forms: the absolute path is noise to a human and a leak
+    // to a machine, and the record already names the file on its own.
+    let label = report::relative(path, root);
+    let text = util::unified_diff(old, new, &label);
     if json {
-        eprint!("{text}");
+        println!("{}", report::diff(&label, &text));
     } else {
         print!("{text}");
     }
@@ -1305,10 +1311,7 @@ fn run_recipes(
 
     if show_diff || !apply {
         for (path, old, new) in &writes {
-            human_raw(
-                json,
-                &util::unified_diff(old, new, &path.display().to_string()),
-            );
+            print_diff(json, root, path, old, new);
         }
     }
 
@@ -1610,10 +1613,7 @@ fn rename_symbol(
     }
 
     for (path, old, new) in &writes {
-        human_raw(
-            json,
-            &util::unified_diff(old, new, &path.display().to_string()),
-        );
+        print_diff(json, &root, path, old, new);
     }
 
     let files = distinct_files(&findings);
