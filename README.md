@@ -52,6 +52,28 @@ Recipes that take parameters accept `--set key=value`, repeatable, on `check` an
 
 `--recipe` accepts an id, a namespace prefix (`rust.idiom` selects the whole pack), or `all`.
 
+## The desktop app
+
+`rustrewrite-gui` is a desktop front end built on egui/eframe. It is a view over the same CLI: every check and apply runs `rustrewrite` as a subprocess and reads its JSON, so the gate, the recipes and the rewrite engine stay in one place.
+
+```
+cargo run -p rustrewrite-gui
+```
+
+The app needs a `rustrewrite` binary. It looks on `PATH` first; if you run it from a checkout without installing, open **Settings** and point it at `target/debug/rustrewrite` (build it with `cargo build`).
+
+The window has five working areas:
+
+- **Top bar** — the workspace root, with **Browse…** for a folder picker and **Load catalog** to fetch the recipe list. The search box filters the list, and **Settings** holds the binary path.
+- **Recipe list** — every catalog entry with its id, kind and risk. The search matches the id, name, tags and description.
+- **Detail** — the selected recipe's name, description, tags and options. Required options are marked `*`, and declared defaults are filled in. What you type becomes `--set key=value`.
+- **Actions** — **Check** is the dry run and **Apply** writes and then runs the correctness gate. The toggles map to `--test`, `--no-verify`, `--allow-dirty`, and the warm analyzer (off passes `--cold`). One job runs at a time; **Cancel** kills it.
+- **Results** — a findings table (`file:line`, recipe, `before → after`), the unified diff for the selected file with added and removed lines coloured, the stderr log, and a summary with the counts, whether changes were kept, and every gate result. A failure or an `error` record appears as a red banner.
+
+A `check` that reports findings exits non-zero by design; the app treats its summary as a completed check rather than a failure.
+
+The app does not write files itself. A rewrite happens only through `run --apply` in the CLI, so a failed gate still rolls the tree back.
+
 ## Machine-readable output
 
 `check`, `run` and `rename` accept `--json`. In that mode stdout carries newline-delimited JSON and nothing else — diffs, notes, progress and gate output all move to stderr — so the stream can be piped straight into `jq`.
