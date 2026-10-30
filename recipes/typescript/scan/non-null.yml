@@ -1,0 +1,22 @@
+id: typescript.scan.non-null
+name: Find non-null assertions
+description: >-
+  Reports every postfix `!` non-null assertion, which tells the compiler to drop
+  `null` and `undefined` from a type without checking anything. When the value
+  really can be nullish the assertion hides a runtime failure, and when it
+  cannot it is redundant, so each report is a decision for a reviewer. The
+  definite-assignment `!` on a class field is a declaration rather than an
+  assertion and is not reported.
+tags: [scan, null-safety]
+risk: low
+mode: scan
+
+steps:
+  - rule:
+      kind: non_null_expression
+    message: non-null assertion removes null and undefined without checking
+
+examples:
+  - before: "return config.get(key)!;"
+    after: "return config.get(key)!;"
+    why: Scan recipes report the assertion and leave the file untouched.

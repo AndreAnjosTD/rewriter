@@ -1,0 +1,20 @@
+id: typescript.scan.console-log
+name: Find console.log calls
+description: >-
+  Reports every `console.log` call. Logging is legitimate in a script, a CLI or
+  a prototype, and a leaked log line is a nuisance rather than a bug, so the
+  decision to remove one stays with the reviewer. Other console methods such as
+  `console.warn` and `console.error` are not reported.
+tags: [scan, logging]
+risk: low
+mode: scan
+
+steps:
+  - rule:
+      pattern: console.log($$$ARGS)
+    message: console.log in shipped code
+
+examples:
+  - before: 'console.log("done", value);'
+    after: 'console.log("done", value);'
+    why: Scan recipes report the call and leave the code untouched.

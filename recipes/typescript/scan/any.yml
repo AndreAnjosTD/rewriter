@@ -1,0 +1,23 @@
+id: typescript.scan.any
+name: Find uses of the any type
+description: >-
+  Reports every explicit `any` type, whether it annotates a parameter, a return
+  type, a variable or a class member, sits inside a generic argument, or appears
+  in an `as any` assertion. `any` switches off checking for everything the value
+  touches, so each report is a place where the compiler has stopped helping.
+  `unknown` is not reported. This is a scan because replacing an `any` needs a
+  narrower type that only the code's intent can supply.
+tags: [scan, types]
+risk: low
+mode: scan
+
+steps:
+  - rule:
+      kind: predefined_type
+      regex: "^any$"
+    message: explicit any type disables checking here
+
+examples:
+  - before: "function parse(raw: any): any { return raw; }"
+    after: "function parse(raw: any): any { return raw; }"
+    why: Scan recipes report every annotation and leave the code untouched.
