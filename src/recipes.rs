@@ -66,6 +66,10 @@ pub enum InsertWhere {
     Top,
     /// After the last top-level `use`, or above the first item when there is none.
     AfterUses,
+    /// On the line above every node the step's `rule` matches.
+    BeforeMatch,
+    /// On the line below every node the step's `rule` matches.
+    AfterMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -306,19 +310,46 @@ impl Catalog {
                     bail!("recipe `{}` has a cargo step with no `command`", recipe.id)
                 }
                 StepKind::Insert => {
-                    if step.insert_where.is_none() {
+                    let Some(at) = step.insert_where else {
                         bail!(
                             "recipe `{}` has an insert step with no `where` \
-                             (expected `top` or `after-uses`)",
+                             (expected `top`, `after-uses`, `before-match` or `after-match`)",
                             recipe.id
                         )
-                    }
+                    };
                     if step
                         .text
                         .as_deref()
                         .is_none_or(|text| text.trim().is_empty())
                     {
                         bail!("recipe `{}` has an insert step with no `text`", recipe.id)
+                    }
+                    let at_name = match at {
+                        InsertWhere::Top => "top",
+                        InsertWhere::AfterUses => "after-uses",
+                        InsertWhere::BeforeMatch => "before-match",
+                        InsertWhere::AfterMatch => "after-match",
+                    };
+                    match at {
+                        InsertWhere::BeforeMatch | InsertWhere::AfterMatch => {
+                            if step.rule.is_none() {
+                                bail!(
+                                    "recipe `{}` has an insert step with `where: {at_name}` \
+                                     but no `rule` to select a node",
+                                    recipe.id
+                                )
+                            }
+                        }
+                        InsertWhere::Top | InsertWhere::AfterUses => {
+                            if step.rule.is_some() {
+                                bail!(
+                                    "recipe `{}` has an insert step with a `rule` and \
+                                     `where: {at_name}`; a rule is only used by \
+                                     `before-match` and `after-match`",
+                                    recipe.id
+                                )
+                            }
+                        }
                     }
                 }
                 StepKind::Semantic => {

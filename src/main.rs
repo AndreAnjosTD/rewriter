@@ -451,12 +451,19 @@ fn test_examples(catalog: &Catalog, selector: Option<&str>) -> Result<()> {
     for recipe in recipes {
         // Recipes with no structural steps of their own are either cargo-only
         // or pure composites. Composites are proven through their children, and
-        // cargo recipes have no snippet to rewrite.
-        if !recipe
+        // cargo recipes have no snippet to rewrite. An insert step can be
+        // proven on a snippet, but some insert recipes scope themselves with
+        // globs, so only the ones carrying examples are exercised here.
+        let structural = recipe
             .steps
             .iter()
-            .any(|step| step.kind == recipes::StepKind::Structural)
-        {
+            .any(|step| step.kind == recipes::StepKind::Structural);
+        let testable_insert = !recipe.examples.is_empty()
+            && recipe
+                .steps
+                .iter()
+                .any(|step| step.kind == recipes::StepKind::Insert);
+        if !structural && !testable_insert {
             continue;
         }
         let resolved = catalog.resolve(recipe)?;

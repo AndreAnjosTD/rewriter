@@ -1,0 +1,65 @@
+id: rust.migrate.add-comment-to-import
+name: Add a comment above matching use declarations
+description: >-
+  Writes `comment` immediately above every `use` declaration selected by
+  `pattern`, the Rust form of OpenRewrite's AddCommentToImport. It is the same
+  node-relative placement as `rust.migrate.add-comment-to-method`, so the
+  comment takes the declaration's indentation and a second run changes
+  nothing. A metavariable pattern such as `use std::$NAME;` annotates a group
+  of imports in one run.
+tags: [migrate, comment]
+risk: low
+
+options:
+  pattern:
+    description: >-
+      ast-grep pattern selecting the `use` declaration, for example
+      `use std::io;`. Metavariables are allowed, so `use std::$NAME;` selects
+      every import from `std` and annotates the whole group in one run.
+    required: true
+  comment:
+    description: >-
+      The comment to write, including its markers, for example
+      `// Used by the legacy importer`. A multi-line value is indented one line
+      at a time.
+    required: true
+
+steps:
+  - kind: insert
+    where: before-match
+    rule:
+      pattern: "${pattern}"
+    text: "${comment}"
+
+examples:
+  - before: |-
+      use std::io;
+      use std::fs;
+
+      fn main() {}
+    after: |-
+      // Used by the legacy importer.
+      use std::io;
+      use std::fs;
+
+      fn main() {}
+    options:
+      pattern: use std::io;
+      comment: // Used by the legacy importer.
+    why: The comment sits directly above the matching import.
+  - before: |-
+      use std::io;
+      use std::fs;
+
+      fn main() {}
+    after: |-
+      // Legacy std imports.
+      use std::io;
+      // Legacy std imports.
+      use std::fs;
+
+      fn main() {}
+    options:
+      pattern: use std::$NAME;
+      comment: // Legacy std imports.
+    why: A metavariable pattern annotates a group of imports in one run.
