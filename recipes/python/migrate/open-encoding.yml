@@ -1,0 +1,36 @@
+id: python.migrate.open-encoding
+name: Open text files with an explicit UTF-8 encoding
+description: >-
+  `open(path)` uses the locale encoding, so the same source reads differently on
+  two machines. Passing `encoding="utf-8"` pins it. Only a call with exactly one
+  positional argument is rewritten. A call that already passes a mode, an
+  encoding, a keyword argument, or a `*`/`**` splat is left alone because the
+  recipe cannot see what those arguments do. The name is matched structurally:
+  a project that defines its own `open` is out of scope.
+tags: [python, migrate, encoding]
+risk: medium
+
+steps:
+  - rule:
+      all:
+        - pattern: open($PATH)
+        - not:
+            any:
+              - pattern: open($NAME=$VALUE)
+              - pattern: open(*$ARGS)
+              - pattern: open(**$KWARGS)
+    fix: open($PATH, encoding="utf-8")
+
+examples:
+  - before: "handle = open(path)"
+    after: 'handle = open(path, encoding="utf-8")'
+    why: The single-argument form has no encoding of its own.
+  - before: 'handle = open(path, "r")'
+    after: 'handle = open(path, "r")'
+    why: A call that already passes a mode keeps its arguments.
+  - before: "handle = open(file=path)"
+    after: "handle = open(file=path)"
+    why: A keyword argument is not a positional path and is left alone.
+  - before: "handle = open(*args)"
+    after: "handle = open(*args)"
+    why: A splat already carries the full argument list.

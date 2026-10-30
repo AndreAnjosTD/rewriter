@@ -1,0 +1,21 @@
+id: python.scan.bare-except
+name: Find bare except clauses
+description: >-
+  A bare `except:` catches every exception, including KeyboardInterrupt and
+  SystemExit, and hides the failure a caller needs to see. Whether the right
+  replacement is a specific exception, Exception or BaseException depends on
+  intent, so this recipe reports and writes nothing.
+tags: [python, scan, error-handling]
+risk: medium
+mode: scan
+
+steps:
+  - rule:
+      kind: except_clause
+      regex: "^except\\s*:"
+    message: bare except catches every exception, including KeyboardInterrupt and SystemExit
+
+examples:
+  - before: "try:\n    run()\nexcept:\n    pass"
+    after: "try:\n    run()\nexcept:\n    pass"
+    why: The scan reports the clause and leaves the handler untouched.

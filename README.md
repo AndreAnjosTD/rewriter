@@ -49,6 +49,17 @@ The project's language is detected from its root; `--language <id>` overrides it
 
 Two honest limits: Python has no compiler, so its gate proves syntax and not types — run `mypy` yourself if you need that; and a required gate command that is not installed fails the run rather than passing it silently, because an unverified rewrite is not a rewrite. Semantic recipes (rename, call-site argument rewriting) are still Rust-only: they need a language server per language, and only rust-analyzer is wired up.
 
+### Python
+
+Python ships a recipe pack under `recipes/python/`: four idiom fixes, one migration and three scans. They are ordinary catalog entries, so a project can compose or override them like any other.
+
+```
+rustrewrite check --recipe python.idiom --path ./service                 # report what the pack would change
+rustrewrite run   --recipe python.idiom.len-truthy --apply --path ./service
+```
+
+The Python gate parses every `.py` file with `ast.parse` and writes no bytecode. It proves the rewrite is still valid Python, not that it is type-correct — run `mypy` yourself for that. `ruff format` tidies the result when `ruff` is installed, and `pytest` runs only with `--test`. `--language python` overrides detection when a repository carries markers for more than one language.
+
 ## Commands
 
 | Command | What it does |
@@ -564,6 +575,14 @@ examples:
 | `rust.scan.transmute` | scan | `mem::transmute` |
 | `rust.scan.process-exit` | scan | `process::exit` |
 | `rust.scan.hardcoded-secret` | scan | a string literal bound to a secret-looking name |
+| `python.idiom.len-truthy` | fix | `len(x) > 0` becomes `x`, and `len(x) == 0` becomes `not x` |
+| `python.idiom.not-in` | fix | `not x in y` becomes `x not in y` |
+| `python.idiom.dict-keys` | fix | a `for` iterable `d.keys()` becomes `d` |
+| `python.idiom.bool-compare` | fix | `x == True` becomes `x`, and `x == False` becomes `not x` |
+| `python.migrate.open-encoding` | fix | a single-argument `open(f)` becomes `open(f, encoding="utf-8")` |
+| `python.scan.bare-except` | scan | `except:` with no exception type |
+| `python.scan.eval` | scan | `eval(...)` |
+| `python.scan.shell-true` | scan | `subprocess.*(..., shell=True)` |
 
 Read-only recipes exist on purpose: `unwrap` is correct in a main, a prototype, or a test.
 The decision belongs to the reviewer, so the tool reports it and writes nothing.
