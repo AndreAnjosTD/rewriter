@@ -311,3 +311,35 @@ fn scan_reports_shell_true_in_any_argument_position() {
         "a scan recipe must not modify the source"
     );
 }
+#[test]
+fn the_whole_catalog_runs_only_this_language() {
+    // `all` used to resolve every recipe in the catalog and then fail on the
+    // first Rust one in a Python project. Another language's recipe is not a
+    // mistake the caller made, so `all` skips it while an explicit id still
+    // says what is wrong.
+    let dir = project(
+        "all",
+        &[(
+            "app.py",
+            "def check(items, flag):\n    return flag == True and len(items) > 0\n",
+        )],
+    );
+
+    let output = run(&["check", "--recipe", "all"], &dir);
+    let report = stdout(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the Python recipes must be found:\n{report}\n{}",
+        stderr(&output)
+    );
+    assert!(
+        report.contains("python.idiom"),
+        "expected Python findings:\n{report}"
+    );
+    assert!(
+        !report.contains("rust."),
+        "a Rust recipe must not run on a Python project:\n{report}"
+    );
+}

@@ -760,8 +760,16 @@ fn resolve_selector(
     let provided = parse_options(options)?;
     let selected = catalog.select(selector)?;
     let mut resolved = Vec::new();
+    // `all` means every recipe this project can run; another language's recipe
+    // in the catalog is not a mistake the caller made, so it is skipped. A
+    // recipe named explicitly that belongs to another language is a mistake, and
+    // saying so is more useful than running nothing.
+    let whole_catalog = selector == "all";
     for recipe in selected {
         if !language::recipe_applies(recipe.language.as_deref(), language) {
+            if whole_catalog {
+                continue;
+            }
             bail!(
                 "recipe `{}` targets {}, but this project is {}; pass --language {} to run it \
                  anyway",
