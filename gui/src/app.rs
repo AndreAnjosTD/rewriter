@@ -835,6 +835,13 @@ impl RustrewriteApp {
         ui.add_space(4.0);
         let height = (ui.available_height() - 4.0).max(80.0);
         ui.columns(2, |columns| {
+            // A resizable table column can be dragged wider than its pane. egui
+            // paints children outside their parent's rect unless something
+            // clips them, which is how the findings table ended up drawn over
+            // the diff. Clip each pane to its own rect so that cannot happen.
+            for column in columns.iter_mut() {
+                column.set_clip_rect(column.max_rect());
+            }
             self.findings_table(&mut columns[0], height);
             self.diff_view(&mut columns[1], height);
         });
@@ -850,14 +857,16 @@ impl RustrewriteApp {
         let mut pick = None;
         let selected = self.selected_diff.clone();
         let body_height = (height - 28.0).max(60.0);
+        // Columns are not draggable on purpose. The cell text is already
+        // truncated with the full value on hover, and a resize handle sitting
+        // this close to the panel's edge made a column drag start a panel drag.
         TableBuilder::new(ui)
             .id_salt("findings_table")
             .striped(true)
-            .resizable(true)
             .max_scroll_height(body_height)
-            .column(Column::initial(150.0).at_least(90.0))
-            .column(Column::initial(170.0).at_least(90.0))
-            .column(Column::remainder().at_least(140.0))
+            .column(Column::initial(150.0).at_least(90.0).clip(true))
+            .column(Column::initial(170.0).at_least(90.0).clip(true))
+            .column(Column::remainder().at_least(140.0).clip(true))
             .header(20.0, |mut header| {
                 header.col(|ui| {
                     ui.strong("Location");
@@ -1020,7 +1029,11 @@ impl eframe::App for RustrewriteApp {
             .default_size(300.0)
             .min_size(140.0)
             .show(ui, |ui| {
-                ui.add_space(4.0);
+                // The panel's own resize edge lives at the top of this rect. A
+                // table header flush against it makes a column drag start as a
+                // panel drag, which then follows the mouse downward; the gutter
+                // keeps the two hit areas apart.
+                ui.add_space(10.0);
                 self.results_ui(ui);
             });
 
