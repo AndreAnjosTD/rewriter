@@ -434,15 +434,14 @@ impl Server {
                             _ => {}
                         }
                     }
-                    Some("experimental/serverStatus") => {
+                    Some("experimental/serverStatus")
                         if message
                             .get("params")
                             .and_then(|p| p.get("quiescent"))
                             .and_then(Value::as_bool)
-                            == Some(true)
-                        {
-                            return true;
-                        }
+                            == Some(true) =>
+                    {
+                        return true;
                     }
                     _ => {}
                 },

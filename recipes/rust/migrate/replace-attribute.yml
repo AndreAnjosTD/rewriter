@@ -1,0 +1,82 @@
+id: rust.migrate.replace-attribute
+name: Rename an attribute
+description: >-
+  Renames `#[from]` to `#[to]` in place, keeping any arguments, the Rust form
+  of OpenRewrite's ReplaceAnnotation. The options are names, not patterns: only
+  the attribute's own path token is rewritten, so an argument that mentions the
+  old name, a comment that mentions it, and an attribute whose name merely
+  starts with the same text all stay as they are. A scoped path is left alone
+  rather than having one segment renamed.
+tags: [migrate, attribute]
+risk: low
+
+options:
+  from:
+    description: The attribute name to rename, such as `deprecated`.
+    required: true
+    literal: true
+  to:
+    description: The new attribute name, such as `obsolete`.
+    required: true
+    literal: true
+
+steps:
+  # The name token is replaced rather than the whole attribute, which is what
+  # preserves `(...)`. `attribute_item` keeps inner attributes out, and
+  # `token_tree` keeps identifiers inside the arguments out. `stopBy: end`
+  # walks past the immediate `attribute` node to reach those contexts.
+  - kind: structural
+    rule:
+      all:
+        - kind: identifier
+        - pattern: '${from}'
+        - inside:
+            kind: attribute_item
+            stopBy: end
+        - not:
+            any:
+              - inside:
+                  kind: token_tree
+                  stopBy: end
+              - inside:
+                  kind: scoped_identifier
+                  stopBy: end
+    fix: '${to}'
+
+examples:
+  - before: |
+      #[inline]
+      fn fast() -> u32 {
+          1
+      }
+    after: |
+      #[cold]
+      fn fast() -> u32 {
+          1
+      }
+    options:
+      from: inline
+      to: cold
+    why: A bare attribute is renamed in place.
+  - before: |
+      #[allow(unused_variables)]
+      fn noisy(value: u32) {}
+    after: |
+      #[warn(unused_variables)]
+      fn noisy(value: u32) {}
+    options:
+      from: allow
+      to: warn
+    why: The arguments survive, including an identifier inside them.
+  - before: |
+      // #[deprecated] is explained here.
+      #[deprecated(note = "deprecated")]
+      fn legacy() {}
+    after: |
+      // #[deprecated] is explained here.
+      #[obsolete(note = "deprecated")]
+      fn legacy() {}
+    options:
+      from: deprecated
+      to: obsolete
+    why: Comments and argument values are not the attribute's name.

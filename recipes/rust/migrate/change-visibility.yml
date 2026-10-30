@@ -1,0 +1,41 @@
+id: rust.migrate.change-visibility
+name: Change a function's visibility
+description: >-
+  Replaces, adds, or removes the visibility modifier on one resolved function
+  declaration. An existing `pub`, `pub(crate)`, `pub(super)` or `pub(in path)`
+  is rewritten in place; a private declaration gets the modifier inserted
+  before `async`, `const`, `unsafe`, `extern` and `fn`, which is the order Rust
+  accepts; an empty `to` removes the modifier and makes the function private.
+  Callers are deliberately not rewritten, and a public declaration made private
+  is only checked against this workspace, so the correctness gate is what
+  decides whether the change is safe. This is the Rust form of OpenRewrite's
+  ChangeMethodAccessLevel.
+tags: [migrate, semantic]
+risk: medium
+
+options:
+  file:
+    description: Path to the file that declares the function, relative to the run root.
+    required: true
+  anchor:
+    description: >-
+      Text on the declaration line, used to find it. For example
+      `pub fn exported() -> u32`.
+    required: true
+  from:
+    description: The function's current name, as written on the declaration line.
+    required: true
+  to:
+    description: >-
+      The new visibility: `pub`, `pub(crate)`, `pub(super)`, or
+      `pub(in crate::module)`. An empty value removes the modifier and makes
+      the function private.
+    required: true
+
+steps:
+  - kind: semantic
+    action: change-visibility
+    file: ${file}
+    anchor: ${anchor}
+    from: ${from}
+    to: ${to}
