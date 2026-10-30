@@ -125,6 +125,9 @@ pub fn catalog(recipes: &[&Recipe]) -> String {
                 "tags": recipe.tags,
                 "risk": recipe.risk.to_string(),
                 "kind": kind(recipe),
+                // The language the recipe targets, so a client can show it and
+                // a mixed catalog stays readable.
+                "language": recipe.language,
                 "options": options,
             })
         })

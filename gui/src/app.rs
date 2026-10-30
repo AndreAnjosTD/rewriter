@@ -475,11 +475,23 @@ impl RustrewriteApp {
         ui.horizontal(|ui| {
             ui.heading("Recipes");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{} loaded", self.recipes.len()))
-                        .small()
-                        .weak(),
-                );
+                // The catalog is filtered by the project's language, so a single
+                // language here names the workspace; a mixed one stays quiet.
+                let languages: BTreeSet<&str> = self
+                    .recipes
+                    .iter()
+                    .filter_map(|recipe| recipe.language.as_deref())
+                    .collect();
+                let label = if languages.len() == 1 {
+                    format!(
+                        "{} loaded · {}",
+                        self.recipes.len(),
+                        languages.iter().next().copied().unwrap_or_default()
+                    )
+                } else {
+                    format!("{} loaded", self.recipes.len())
+                };
+                ui.label(RichText::new(label).small().weak());
             });
         });
         ui.add_space(4.0);
@@ -595,6 +607,10 @@ impl RustrewriteApp {
                             &recipe.kind
                         }
                     ));
+                    if let Some(language) = &recipe.language {
+                        ui.separator();
+                        ui.label(format!("language: {language}"));
+                    }
                     ui.separator();
                     ui.colored_label(
                         risk_color(&recipe.risk),

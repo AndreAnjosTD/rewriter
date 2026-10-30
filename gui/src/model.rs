@@ -21,6 +21,10 @@ pub struct Recipe {
     pub risk: String,
     #[serde(default)]
     pub kind: String,
+    /// The language namespace the recipe targets, e.g. `rust`. Absent for a
+    /// local recipe written before the catalog was split by language.
+    #[serde(default)]
+    pub language: Option<String>,
     /// Keyed by option name; `{}` when the recipe takes none.
     #[serde(default)]
     pub options: BTreeMap<String, RecipeOption>,
