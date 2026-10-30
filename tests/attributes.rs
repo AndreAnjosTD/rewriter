@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rustrewrite")
+    env!("CARGO_BIN_EXE_rewriter")
 }
 
 /// A minimal crate in a unique temp directory.
 fn scratch(suffix: &str, source: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "rustrewrite-attributes-{}-{}-{}",
+        "rewriter-attributes-{}-{}-{}",
         suffix,
         std::process::id(),
         std::time::SystemTime::now()
@@ -42,7 +42,7 @@ fn run(args: &[&str], dir: &Path) -> Output {
     if matches!(args.first().copied(), Some("run" | "check")) {
         command.arg("--cold");
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn stdout(output: &Output) -> String {

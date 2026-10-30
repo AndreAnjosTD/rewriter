@@ -54,30 +54,30 @@ fn fixture(name: &str, suffix: &str) -> PathBuf {
         .join("tests")
         .join("fixtures")
         .join(name);
-    let destination = std::env::temp_dir().join(format!("rustrewrite-warm-{}", unique(suffix)));
+    let destination = std::env::temp_dir().join(format!("rewriter-warm-{}", unique(suffix)));
     let _ = std::fs::remove_dir_all(&destination);
     copy_dir(&source, &destination);
     destination
 }
 
 fn state_dir(suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rustrewrite-state-{}", unique(suffix)));
+    let dir = std::env::temp_dir().join(format!("rewriter-state-{}", unique(suffix)));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create state dir");
     dir
 }
 
 fn run_with(args: &[&str], dir: &Path, state: &Path, analyzer: Option<&str>) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_rustrewrite"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rewriter"));
     command
         .args(args)
         .arg("--path")
         .arg(dir)
-        .env("RUSTREWRITE_STATE_DIR", state);
+        .env("REWRITER_STATE_DIR", state);
     if let Some(analyzer) = analyzer {
-        command.env("RUSTREWRITE_ANALYZER", analyzer);
+        command.env("REWRITER_ANALYZER", analyzer);
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn stdout(output: &Output) -> String {

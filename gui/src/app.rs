@@ -342,11 +342,11 @@ impl RustrewriteApp {
             .find(|line| !line.is_empty());
         match (code, detail) {
             (Some(code), Some(detail)) => {
-                format!("rustrewrite exited with status {code}: {detail}")
+                format!("rewriter exited with status {code}: {detail}")
             }
-            (Some(code), None) => format!("rustrewrite exited with status {code}."),
-            (None, Some(detail)) => format!("rustrewrite stopped: {detail}"),
-            (None, None) => "rustrewrite stopped without an exit status.".to_string(),
+            (Some(code), None) => format!("rewriter exited with status {code}."),
+            (None, Some(detail)) => format!("rewriter stopped: {detail}"),
+            (None, None) => "rewriter stopped without an exit status.".to_string(),
         }
     }
 
@@ -1004,7 +1004,7 @@ impl RustrewriteApp {
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label("rustrewrite binary");
+                ui.label("rewriter binary");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.binary)
                         .desired_width(420.0)

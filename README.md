@@ -1,14 +1,14 @@
-# rustrewrite
+# rewriter
 
-Recipe-driven, verified refactoring for Rust: the OpenRewrite idea, built for a language that has no LST.
+Recipe-driven, verified refactoring for Rust, Python and TypeScript: the OpenRewrite idea, built for languages that have no LST.
 
 You describe a rewrite once as a recipe. The tool finds every match across the codebase, applies the rewrite, then compiles the result and puts everything back if the build breaks.
-A rewrite that does not compile is not a rewrite, it is a broken build, and `rustrewrite` refuses to leave one behind.
+A rewrite that does not compile is not a rewrite, it is a broken build, and `rewriter` refuses to leave one behind.
 
 ```
-rustrewrite check --recipe rust.idioms          # what would change, and where
-rustrewrite run   --recipe rust.idioms --apply  # change it, then prove it still builds
-rustrewrite run   --recipe rust.idioms --apply --test   # ...and run the tests too
+rewriter check --recipe rust.idioms          # what would change, and where
+rewriter run   --recipe rust.idioms --apply  # change it, then prove it still builds
+rewriter run   --recipe rust.idioms --apply --test   # ...and run the tests too
 ```
 
 ## Install
@@ -21,7 +21,7 @@ The binary is self-contained: the recipe catalog is compiled into it.
 
 ## How it maps onto OpenRewrite
 
-| OpenRewrite | rustrewrite |
+| OpenRewrite | rewriter |
 | --- | --- |
 | Recipe | a YAML file with an id, tags, risk class and steps |
 | Declarative recipe | `steps:` of structural rules, no code required |
@@ -30,7 +30,7 @@ The binary is self-contained: the recipe catalog is compiled into it.
 | `RewriteRun` | `run --apply` |
 | Scan recipe | `mode: scan`, reports without writing |
 | LST | tree-sitter parse of the file, edited in place so formatting and comments survive |
-| Recipe tests | `examples:` per recipe, executed by `rustrewrite test` |
+| Recipe tests | `examples:` per recipe, executed by `rewriter test` |
 
 The one deliberate difference: OpenRewrite assumes type attribution everywhere. Rust recipes here are either syntax-scoped, where tree-sitter proves the match, or analyzer-backed, where rust-analyzer resolves the symbol. The compile gate catches what neither proves.
 That trade is why the gate is mandatory rather than optional.
@@ -54,9 +54,9 @@ Two honest limits: Python has no compiler, so its gate proves syntax and not typ
 Python ships a recipe pack under `recipes/python/`: four idiom fixes, one migration and three scans. They are ordinary catalog entries, so a project can compose or override them like any other.
 
 ```
-rustrewrite check --recipe python.idiom --path ./service                 # report what the pack would change
-rustrewrite run   --recipe python.idioms --apply --path ./service        # every safe idiom, one gate
-rustrewrite run   --recipe python.idiom.len-truthy --apply --path ./service
+rewriter check --recipe python.idiom --path ./service                 # report what the pack would change
+rewriter run   --recipe python.idioms --apply --path ./service        # every safe idiom, one gate
+rewriter run   --recipe python.idiom.len-truthy --apply --path ./service
 ```
 
 The Python gate parses every `.py` file with `ast.parse` and writes no bytecode. It proves the rewrite is still valid Python, not that it is type-correct - run `mypy` yourself for that. `ruff format` tidies the result when `ruff` is installed, and `pytest` runs only with `--test`. `--language python` overrides detection when a repository carries markers for more than one language.
@@ -66,9 +66,9 @@ The Python gate parses every `.py` file with `ast.parse` and writes no bytecode.
 The TypeScript pack is structural, so it needs no language server. `check --recipe <id>` finds matches without a compiler, which makes it usable on a machine that has none:
 
 ```
-rustrewrite check --recipe typescript.idiom.array-includes --path .
-rustrewrite check --recipe typescript.scan --path .
-rustrewrite run   --recipe typescript.idiom.array-includes --apply --path .
+rewriter check --recipe typescript.idiom.array-includes --path .
+rewriter check --recipe typescript.scan --path .
+rewriter run   --recipe typescript.idiom.array-includes --apply --path .
 ```
 
 `run --apply` is the step that needs `tsc`: the gate runs `prettier --write` when it is installed, then requires `tsc --noEmit`. Without a compiler the gate says it found no compile command and rolls the tree back, because an unverified rewrite is not a rewrite. Install TypeScript (`npm install --save-dev typescript`) or put `tsc` on `PATH` before applying.
@@ -94,7 +94,7 @@ Recipes that take parameters accept `--set key=value`, repeatable, on `check` an
 Repeat it to run several recipes in one pass, which shares one scan and one compile gate instead of paying for each recipe separately:
 
 ```
-rustrewrite run --recipe rust.idioms --recipe rust.migrate.add-license-header --apply
+rewriter run --recipe rust.idioms --recipe rust.migrate.add-license-header --apply
 ```
 
 A selector whose steps another selector already contributed is not run twice, so `--recipe rust.idioms --recipe rust.idiom.string-len-zero` reports the same findings as `rust.idioms` alone.
@@ -102,13 +102,13 @@ Recipes that declare a required option cannot be batched, because one `--set` ma
 
 ## The desktop app
 
-`rustrewrite-gui` is a desktop front end built on egui/eframe. It is a view over the same CLI: every check and apply runs `rustrewrite` as a subprocess and reads its JSON, so the gate, the recipes and the rewrite engine stay in one place.
+`rewriter-gui` is a desktop front end built on egui/eframe. It is a view over the same CLI: every check and apply runs `rewriter` as a subprocess and reads its JSON, so the gate, the recipes and the rewrite engine stay in one place.
 
 ```
-cargo run -p rustrewrite-gui
+cargo run -p rewriter-gui
 ```
 
-The app needs a `rustrewrite` binary. It looks on `PATH` first; if you run it from a checkout without installing, open **Settings** and point it at `target/debug/rustrewrite` (build it with `cargo build`).
+The app needs a `rewriter` binary. It looks on `PATH` first; if you run it from a checkout without installing, open **Settings** and point it at `target/debug/rewriter` (build it with `cargo build`).
 
 The window has five working areas:
 
@@ -123,7 +123,7 @@ The window has five working areas:
 Checking more than one recipe turns the actions into a batch: the app builds **one** command with one `--recipe` per checked recipe, in catalog order, and the CLI scans once and gates once at the end.
 
 ```
-rustrewrite --path <root> run --apply --json --diff --recipe A --recipe B --recipe C
+rewriter --path <root> run --apply --json --diff --recipe A --recipe B --recipe C
 ```
 
 With nothing checked, **Check** and **Apply** act on the inspected recipe exactly as before. With exactly one checked, they act on that recipe. Options belong to a single recipe, so while a batch is checked the option fields are replaced with a note saying so; uncheck back to one recipe and its options return.
@@ -171,14 +171,14 @@ Every line is one object, and `type` says which kind it is. Readers can skip a t
 A successful command ends with its summary. A failed one ends with `error` as the last line and exits non-zero; `check` also exits 1 when it reports findings, and still ends with its summary.
 
 ```console
-$ rustrewrite check --recipe rust.idioms --json \
+$ rewriter check --recipe rust.idioms --json \
   | jq -r 'select(.type == "finding") | "\(.file):\(.line):\(.column) \(.recipe)"'
 src/main.rs:10:8 rust.idiom.string-len-zero
 src/main.rs:18:8 rust.idiom.bool-compare
 src/main.rs:21:8 rust.idiom.bool-compare
 ...
 
-$ rustrewrite run --recipe rust.idioms --apply --json \
+$ rewriter run --recipe rust.idioms --apply --json \
   | jq 'select(.type == "summary") | {changed, applied, gates}'
 {
   "changed": true,
@@ -195,8 +195,8 @@ $ rustrewrite run --recipe rust.idioms --apply --json \
 Recipes match syntax, and syntax cannot tell a `Vec::len` from a `MyBag::len`. When the change has to hit exactly one of them, ask the compiler-backed server instead:
 
 ```
-rustrewrite rename --at src/server.rs:42:8 --to spawn          # report
-rustrewrite rename --at src/server.rs:42:8 --to spawn --apply  # rename, then gate it
+rewriter rename --at src/server.rs:42:8 --to spawn          # report
+rewriter rename --at src/server.rs:42:8 --to spawn --apply  # rename, then gate it
 ```
 
 It starts `rust-analyzer`, waits for the workspace to load, and asks for a rename at that position. The server returns the edits, this tool applies them, and the compile gate still decides whether they stay. A dry run shows the diff and writes nothing.
@@ -214,10 +214,10 @@ Requirements and cost:
 Loading a workspace is the whole cost, and it is paid once per server rather than once per command. The first semantic command on a workspace starts a server in the background; later commands attach to it and skip the load:
 
 ```
-rustrewrite rename --at cli/src/exit.rs:112:12 --to status_code   # 17.1 s, starts the server
-rustrewrite rename --at cli/src/exit.rs:112:12 --to status_code   #  0.26 s, same process
-rustrewrite serve --status                                        # who is serving, and how many requests
-rustrewrite serve --stop
+rewriter rename --at cli/src/exit.rs:112:12 --to status_code   # 17.1 s, starts the server
+rewriter rename --at cli/src/exit.rs:112:12 --to status_code   #  0.26 s, same process
+rewriter serve --status                                        # who is serving, and how many requests
+rewriter serve --stop
 ```
 
 Those two numbers are the same rename on a 35k-line workspace. A recipe run goes from tens of seconds to about one.
@@ -226,7 +226,7 @@ Those two numbers are the same rename on a 35k-line workspace. A recipe run goes
 - The server is keyed by workspace root, so two projects get two servers.
 - It exits after 15 minutes without a request; `serve --idle SECS` changes that when started by hand, and `0` keeps it alive.
 - `--cold` on `check`, `run` and `rename` bypasses it and starts a one-shot analyzer, which is what you want in CI or when comparing timings.
-- `RUSTREWRITE_STATE_DIR` relocates the small state file that names the server's port. `RUSTREWRITE_TRACE=1` makes a foreground `serve` log every request it answers.
+- `REWRITER_STATE_DIR` relocates the small state file that names the server's port. `REWRITER_TRACE=1` makes a foreground `serve` log every request it answers.
 - One client at a time is served; a second command waits its turn instead of starting a second analyzer.
 
 ### As recipes
@@ -234,12 +234,12 @@ Those two numbers are the same rename on a 35k-line workspace. A recipe run goes
 The same capability is available as parameterized recipes, which is what makes it composable with the rest of the catalog:
 
 ```
-rustrewrite check --recipe rust.migrate.change-method-name \
+rewriter check --recipe rust.migrate.change-method-name \
   --set file=src/server.rs \
   --set 'anchor=fn start(&self)' \
   --set from=start --set to=spawn
 
-rustrewrite run --recipe rust.migrate.change-type \
+rewriter run --recipe rust.migrate.change-type \
   --set file=src/graph.rs --set 'anchor=struct Bag' \
   --set from=Bag --set to=Sack --apply
 ```
@@ -253,7 +253,7 @@ These are the Rust forms of OpenRewrite's `ChangeMethodName` and `ChangeType`: o
 `rust.migrate.rename-symbol` is the recipe form of `rename --at`, so a resolved rename can compose with other steps:
 
 ```
-rustrewrite run --recipe rust.migrate.rename-symbol \
+rewriter run --recipe rust.migrate.rename-symbol \
   --set file=src/limits.rs --set 'anchor=pub const MAX: u32 = 100' \
   --set from=MAX --set to=CEILING --apply
 ```
@@ -263,7 +263,7 @@ It works for constants, statics, fields and functions. Because the analyzer reso
 ### Changing a return type
 
 ```
-rustrewrite run --recipe rust.migrate.change-return-type \
+rewriter run --recipe rust.migrate.change-return-type \
   --set file=src/version.rs --set 'anchor=fn major(&self) -> u8' \
   --set from=major --set to=u64 --apply
 ```
@@ -275,7 +275,7 @@ Call sites are deliberately not rewritten. Widening a return type is only safe w
 ### Changing a function's visibility
 
 ```
-rustrewrite run --recipe rust.migrate.change-visibility \
+rewriter run --recipe rust.migrate.change-visibility \
   --set file=src/lib.rs --set 'anchor=fn helper()' \
   --set from=helper --set to=pub(crate) --apply
 ```
@@ -289,7 +289,7 @@ The four accepted forms are `pub`, `pub(crate)`, `pub(super)` and `pub(in crate:
 Changing an argument list is not one symbol, it is every call plus the declaration, and getting one wrong stops the crate compiling. Three recipes handle that family:
 
 ```
-rustrewrite run --recipe rust.migrate.delete-argument \
+rewriter run --recipe rust.migrate.delete-argument \
   --set file=src/main.rs --set 'anchor=fn record(scope: &str' \
   --set from=record --set index=0 --apply
 ```
@@ -309,7 +309,7 @@ These are OpenRewrite's `DeleteMethodArgument`, `AddLiteralMethodArgument` and `
 rust-analyzer ships roughly 134 assists — inline a variable, promote a local to a constant, shorten a fully qualified path, add a missing match arm. They are reachable through the same model:
 
 ```
-rustrewrite run --recipe rust.migrate.assist \
+rewriter run --recipe rust.migrate.assist \
   --set file=src/main.rs --set 'anchor=let sum' \
   --set from=sum --set 'title=Inline variable' --apply
 ```
@@ -321,10 +321,10 @@ The assist is requested over the token at `from`, matched by title, resolved int
 Two structural primitives cover OpenRewrite's string-literal recipes. Both match a literal by its exact source spelling, so a comment, an identifier, or a longer string that merely contains the text is untouched, and both cover plain and raw literals. A raw literal keeps its delimiter and hash count.
 
 ```
-rustrewrite run --recipe rust.migrate.replace-string-literal \
+rewriter run --recipe rust.migrate.replace-string-literal \
   --set from=api.internal --set to=api.example.com --apply
 
-rustrewrite run --recipe rust.migrate.string-literal-to-constant \
+rewriter run --recipe rust.migrate.string-literal-to-constant \
   --set from=api.internal --set to=crate::PROD_HOST --apply
 ```
 
@@ -337,10 +337,10 @@ rustrewrite run --recipe rust.migrate.string-literal-to-constant \
 Two structural primitives cover OpenRewrite's annotation recipes:
 
 ```
-rustrewrite run --recipe rust.migrate.remove-attribute \
+rewriter run --recipe rust.migrate.remove-attribute \
   --set attribute=deprecated --apply
 
-rustrewrite run --recipe rust.migrate.replace-attribute \
+rewriter run --recipe rust.migrate.replace-attribute \
   --set from=deprecated --set to=obsolete --apply
 ```
 
@@ -363,7 +363,7 @@ A failed gate means the recipe is wrong, not that the code is wrong.
 
 ## Writing a recipe
 
-A recipe is a YAML file. The catalog lives in `recipes/`, and a project can add its own under `.rustrewrite/recipes/` (loaded automatically) or any directory passed with `--recipes`.
+A recipe is a YAML file. The catalog lives in `recipes/`, and a project can add its own under `.rewriter/recipes/` (loaded automatically) or any directory passed with `--recipes`.
 
 ```yaml
 id: rust.idiom.string-len-zero
@@ -467,7 +467,7 @@ options:
     default: "// SPDX-License-Identifier: MIT"
 ```
 
-`rustrewrite list` shows which recipes need `--set`, and `explain` describes each option.
+`rewriter list` shows which recipes need `--set`, and `explain` describes each option.
 
 A recipe marked `opt-in: true` is only run when it is named; `all` skips it. Use that for a recipe whose default behavior is a project policy choice rather than a mechanical fix, such as which license header to stamp.
 
@@ -476,17 +476,17 @@ An option marked `literal: true` is substituted into an ast-grep pattern or temp
 A recipe may not mix text-editing (`structural` or `insert`) and `semantic` steps. The text pass happens before the rename is resolved, so the analyzer would be pointed at a file that has already moved. Split such a change into two recipes and run them in order.
 
 Every recipe that rewrites something should carry at least one `example`.
-`rustrewrite test` runs them all, so a recipe that silently stops matching fails the build rather than quietly doing nothing.
+`rewriter test` runs them all, so a recipe that silently stops matching fails the build rather than quietly doing nothing.
 
 ## Inserting text
 
 Some migrations add text where there is no node to replace. An `insert` step covers those, and the same step serves `check` and `run --apply`:
 
 ```
-rustrewrite check --recipe rust.migrate.add-license-header
-rustrewrite run   --recipe rust.migrate.add-license-header --apply
+rewriter check --recipe rust.migrate.add-license-header
+rewriter run   --recipe rust.migrate.add-license-header --apply
 
-rustrewrite run --recipe rust.migrate.add-import \
+rewriter run --recipe rust.migrate.add-import \
   --set path=std::collections::BTreeMap --apply
 ```
 
@@ -524,10 +524,10 @@ The value is a function header such as `fn start(&self)` or `fn $NAME(&self)`; t
 A metavariable pattern annotates a group in one run:
 
 ```
-rustrewrite run --recipe rust.migrate.add-comment-to-method \
+rewriter run --recipe rust.migrate.add-comment-to-method \
   --set 'pattern=fn $NAME(&self)' --set 'comment=// TODO: document' --apply
 
-rustrewrite run --recipe rust.migrate.add-comment-to-import \
+rewriter run --recipe rust.migrate.add-comment-to-import \
   --set 'pattern=use std::$NAME;' --set 'comment=// Legacy std imports.' --apply
 ```
 

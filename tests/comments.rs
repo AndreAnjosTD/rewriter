@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rustrewrite")
+    env!("CARGO_BIN_EXE_rewriter")
 }
 
 /// A minimal crate in a unique temp directory.
 fn scratch(suffix: &str, source: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "rustrewrite-comments-{}-{}-{}",
+        "rewriter-comments-{}-{}-{}",
         suffix,
         std::process::id(),
         std::time::SystemTime::now()
@@ -42,7 +42,7 @@ fn run(args: &[&str], dir: &Path) -> Output {
     if matches!(args.first().copied(), Some("run" | "check")) {
         command.arg("--cold");
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn stdout(output: &Output) -> String {
@@ -302,7 +302,7 @@ fn a_group_of_imports_is_annotated_in_one_run() {
 #[test]
 fn a_match_placement_without_a_rule_is_refused() {
     let dir = scratch("no-rule", method_fixture());
-    let recipes = dir.join(".rustrewrite").join("recipes");
+    let recipes = dir.join(".rewriter").join("recipes");
     std::fs::create_dir_all(&recipes).expect("create recipe dir");
     std::fs::write(
         recipes.join("broken.yml"),
@@ -330,7 +330,7 @@ fn a_match_placement_without_a_rule_is_refused() {
 #[test]
 fn after_match_writes_on_the_line_below_the_node() {
     let dir = scratch("after-match", method_fixture());
-    let recipes = dir.join(".rustrewrite").join("recipes");
+    let recipes = dir.join(".rewriter").join("recipes");
     std::fs::create_dir_all(&recipes).expect("create recipe dir");
     std::fs::write(
         recipes.join("after.yml"),

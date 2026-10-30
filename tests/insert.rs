@@ -9,13 +9,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rustrewrite")
+    env!("CARGO_BIN_EXE_rewriter")
 }
 
 /// A minimal crate in a unique temp directory.
 fn scratch(suffix: &str, source: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "rustrewrite-insert-{}-{}-{}",
+        "rewriter-insert-{}-{}-{}",
         suffix,
         std::process::id(),
         std::time::SystemTime::now()
@@ -41,7 +41,7 @@ fn run(args: &[&str], dir: &Path) -> Output {
     if matches!(args.first().copied(), Some("run" | "check")) {
         command.arg("--cold");
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn stdout(output: &Output) -> String {
@@ -358,7 +358,7 @@ fn json_output_stays_ndjson() {
 /// invalid neighbour would fail the run before the recipe under test is selected.
 fn broken_recipe(suffix: &str, yaml: &str) -> String {
     let dir = scratch(suffix, "pub fn one() -> u8 {\n    1\n}\n");
-    let recipes = dir.join(".rustrewrite").join("recipes");
+    let recipes = dir.join(".rewriter").join("recipes");
     std::fs::create_dir_all(&recipes).expect("create recipe dir");
     std::fs::write(recipes.join("broken.yml"), yaml).expect("write recipe");
     let output = run(&["check", "--recipe", "test.broken"], &dir);

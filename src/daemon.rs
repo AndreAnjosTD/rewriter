@@ -2,7 +2,7 @@
 //!
 //! Loading a large workspace costs tens of seconds: on a 38k-line crate the
 //! analyzer spent about 78 s and 1.9 GB before it would answer a single rename.
-//! Paying that on every `rustrewrite run` made semantic recipes unusable in a
+//! Paying that on every `rewriter run` made semantic recipes unusable in a
 //! loop, so this module keeps one analyzer alive per workspace and lets later
 //! commands ask the same questions of the same process.
 //!
@@ -15,7 +15,7 @@
 //!
 //! - The server is keyed by workspace root, so two workspaces get two servers.
 //! - It is not a daemon in the "always running" sense. It exits after
-//!   `--idle` seconds without a request, and `rustrewrite serve --stop` ends it
+//!   `--idle` seconds without a request, and `rewriter serve --stop` ends it
 //!   immediately.
 
 use crate::semantic::{
@@ -54,7 +54,7 @@ struct ServerState {
     version: String,
 }
 
-/// What `rustrewrite serve --status` reports.
+/// What `rewriter serve --status` reports.
 pub struct Status {
     pub pid: u32,
     pub ready: bool,
@@ -62,12 +62,12 @@ pub struct Status {
     pub idle_secs: u64,
 }
 
-/// Optional request trace, enabled with `RUSTREWRITE_TRACE=1`.
+/// Optional request trace, enabled with `REWRITER_TRACE=1`.
 ///
 /// The server usually runs with its stderr in the void, so this is the only way
 /// to see what it was asked and why it closed a connection.
 fn trace(message: &str) {
-    if std::env::var_os("RUSTREWRITE_TRACE").is_some() {
+    if std::env::var_os("REWRITER_TRACE").is_some() {
         eprintln!("[warm] {message}");
     }
 }
@@ -322,7 +322,7 @@ pub fn stop(root: &Path) -> Result<bool> {
 }
 
 fn spawn_server(root: &Path) -> Result<()> {
-    let exe = std::env::current_exe().context("locating the rustrewrite binary")?;
+    let exe = std::env::current_exe().context("locating the rewriter binary")?;
     let args = vec![
         "--path".to_string(),
         root.display().to_string(),
@@ -338,7 +338,7 @@ fn spawn_server(root: &Path) -> Result<()> {
 /// The obvious implementation — `Command::spawn` with null stdio — leaks the
 /// caller's stdout pipe into the server, because a Windows child inherits every
 /// inheritable handle of its parent. The pipe then stays open for as long as the
-/// server lives, so `rustrewrite run ... | tee log` never sees it close and
+/// server lives, so `rewriter run ... | tee log` never sees it close and
 /// appears to hang. `bInheritHandles = FALSE` is the only way to say "nothing of
 /// mine", and std exposes it only on nightly.
 #[cfg(windows)]
@@ -438,7 +438,7 @@ fn spawn_detached(exe: &Path, args: &[String]) -> Result<()> {
 }
 
 fn state_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("RUSTREWRITE_STATE_DIR") {
+    if let Some(dir) = std::env::var_os("REWRITER_STATE_DIR") {
         return Ok(PathBuf::from(dir));
     }
     let base = if cfg!(windows) {
@@ -451,8 +451,8 @@ fn state_dir() -> Result<PathBuf> {
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
     };
     Ok(base
-        .context("no cache directory; set RUSTREWRITE_STATE_DIR")?
-        .join("rustrewrite")
+        .context("no cache directory; set REWRITER_STATE_DIR")?
+        .join("rewriter")
         .join("servers"))
 }
 
@@ -553,7 +553,7 @@ pub fn serve(root: &Path, idle: Duration) -> Result<()> {
     let mut session = Session::start(&root)?;
     listener.set_nonblocking(true)?;
     eprintln!(
-        "rustrewrite: warm server for {} on 127.0.0.1:{port}",
+        "rewriter: warm server for {} on 127.0.0.1:{port}",
         root.display()
     );
 
@@ -569,7 +569,7 @@ pub fn serve(root: &Path, idle: Duration) -> Result<()> {
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if !idle.is_zero() && session.last.elapsed() >= idle {
                     eprintln!(
-                        "rustrewrite: warm server idle for {}s, exiting",
+                        "rewriter: warm server idle for {}s, exiting",
                         idle.as_secs()
                     );
                     break;
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn a_stale_state_file_is_not_mistaken_for_an_absent_one() {
-        let root = std::env::temp_dir().join(format!("rustrewrite-state-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rewriter-state-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("create");
         let state = ServerState {

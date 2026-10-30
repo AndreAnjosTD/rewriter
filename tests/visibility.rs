@@ -27,7 +27,7 @@ fn fixture(suffix: &str) -> PathBuf {
         .join("fixtures")
         .join("visibility-crate");
     let destination = std::env::temp_dir().join(format!(
-        "rustrewrite-visibility-{}-{}-{}",
+        "rewriter-visibility-{}-{}-{}",
         suffix,
         std::process::id(),
         std::time::SystemTime::now()
@@ -41,14 +41,14 @@ fn fixture(suffix: &str) -> PathBuf {
 }
 
 fn run(args: &[&str], dir: &Path) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_rustrewrite"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rewriter"));
     command.args(args).arg("--path").arg(dir);
     // Tests use a throwaway workspace per case, so a warm server would never be
     // reused and would outlive the test.
     if matches!(args.first().copied(), Some("run" | "check" | "rename")) {
         command.arg("--cold");
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn read(dir: &Path) -> String {

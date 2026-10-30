@@ -1,4 +1,4 @@
-//! The records `rustrewrite --json` writes, and the catalog it lists.
+//! The records `rewriter --json` writes, and the catalog it lists.
 //!
 //! `type` is the discriminator, and readers are expected to skip a type they
 //! do not know so the stream stays additive. The shapes here mirror the README

@@ -1,6 +1,6 @@
 //! Idempotency: running a fix recipe on its own output must change nothing.
 //!
-//! `rustrewrite test` proves before -> after for every example. This module
+//! `rewriter test` proves before -> after for every example. This module
 //! proves the other half of the contract, that applying the same recipe to
 //! `after` leaves it alone. A recipe that fails here is not safe to re-run
 //! against a tree that is already partly migrated, which is exactly what happens

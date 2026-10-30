@@ -1,4 +1,4 @@
-//! Building the `rustrewrite` command line, running it off the UI thread, and
+//! Building the `rewriter` command line, running it off the UI thread, and
 //! turning its stdout into [`Event`]s.
 
 use crate::model::{parse_record, Recipe, Record};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Looked up on PATH when the settings field is left empty.
-pub const DEFAULT_BINARY: &str = "rustrewrite";
+pub const DEFAULT_BINARY: &str = "rewriter";
 
 /// There is no separate dry-run command: the CLI's `check` is the dry run of
 /// the same recipes `run --apply` executes.
@@ -49,7 +49,7 @@ pub fn binary_name(binary: &str) -> &str {
     }
 }
 
-/// `rustrewrite --path <root> <subcommand> ...`.
+/// `rewriter --path <root> <subcommand> ...`.
 pub fn build_args(spec: &JobSpec) -> Vec<String> {
     let root = match spec.root.trim() {
         "" => ".",
@@ -514,11 +514,11 @@ mod tests {
 
     #[test]
     fn an_empty_binary_falls_back_to_the_path_name() {
-        assert_eq!(binary_name(""), "rustrewrite");
-        assert_eq!(binary_name("   "), "rustrewrite");
+        assert_eq!(binary_name(""), "rewriter");
+        assert_eq!(binary_name("   "), "rewriter");
         assert_eq!(
-            binary_name(" C:/tools/rustrewrite.exe "),
-            "C:/tools/rustrewrite.exe"
+            binary_name(" C:/tools/rewriter.exe "),
+            "C:/tools/rewriter.exe"
         );
     }
 

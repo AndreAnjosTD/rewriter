@@ -1,12 +1,12 @@
 [package]
-name = "rustrewrite-gui"
+name = "rewriter-gui"
 version = "0.1.0"
 edition = "2021"
-description = "Desktop interface for rustrewrite"
+description = "Desktop interface for rewriter"
 license = "MIT"
 
 [[bin]]
-name = "rustrewrite-gui"
+name = "rewriter-gui"
 path = "src/main.rs"
 
 [dependencies]

@@ -3,15 +3,15 @@ members = [".", "gui"]
 resolver = "2"
 
 [package]
-name = "rustrewrite"
+name = "rewriter"
 version = "0.1.0"
 edition = "2021"
-description = "Recipe-driven, verified refactoring for Rust: OpenRewrite-style rewrites with an automatic correctness gate"
+description = "Recipe-driven, verified refactoring for Rust, Python and TypeScript, with an automatic correctness gate"
 license = "MIT"
 build = "build.rs"
 
 [[bin]]
-name = "rustrewrite"
+name = "rewriter"
 path = "src/main.rs"
 
 [dependencies]

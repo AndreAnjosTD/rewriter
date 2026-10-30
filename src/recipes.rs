@@ -250,7 +250,7 @@ impl Catalog {
 
         // Project-local recipes take precedence over built-ins: this is how a
         // team pins its own migration catalog next to the code it migrates.
-        let dir = root.join(".rustrewrite").join("recipes");
+        let dir = root.join(".rewriter").join("recipes");
         if dir.is_dir() {
             catalog.load_dir(&dir)?;
         }

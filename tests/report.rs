@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rustrewrite")
+    env!("CARGO_BIN_EXE_rewriter")
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -31,7 +31,7 @@ fn fixture(name: &str, suffix: &str) -> PathBuf {
         .join("fixtures")
         .join(name);
     let dst = std::env::temp_dir().join(format!(
-        "rustrewrite-json-{}-{}-{}",
+        "rewriter-json-{}-{}-{}",
         suffix,
         std::process::id(),
         std::time::SystemTime::now()
@@ -52,7 +52,7 @@ fn run(args: &[&str], dir: &Path) -> Output {
     if matches!(args.first().copied(), Some("run" | "check" | "rename")) {
         command.arg("--cold");
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn stdout(output: &Output) -> String {

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rustrewrite")
+    env!("CARGO_BIN_EXE_rewriter")
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -28,7 +28,7 @@ fn fixture(suffix: &str) -> PathBuf {
         .join("fixtures")
         .join("demo-crate");
     let dst = std::env::temp_dir().join(format!(
-        "rustrewrite-it-{}-{}-{}",
+        "rewriter-it-{}-{}-{}",
         suffix,
         std::process::id(),
         std::time::SystemTime::now()
@@ -49,7 +49,7 @@ fn run(args: &[&str], dir: &Path) -> Output {
     if matches!(args.first().copied(), Some("run" | "check" | "rename")) {
         command.arg("--cold");
     }
-    command.output().expect("running rustrewrite")
+    command.output().expect("running rewriter")
 }
 
 fn stdout(output: &Output) -> String {
@@ -69,7 +69,7 @@ fn recipe_catalog_examples_all_pass() {
     let output = Command::new(bin())
         .arg("test")
         .output()
-        .expect("running rustrewrite test");
+        .expect("running rewriter test");
     assert!(
         output.status.success(),
         "recipe examples failed:\n{}\n{}",
@@ -154,7 +154,7 @@ fn apply_rolls_back_when_the_rewrite_breaks_the_build() {
 
     // A project-local recipe that is deliberately wrong: it renames the length
     // check to a method that does not exist.
-    let recipes = dir.join(".rustrewrite").join("recipes");
+    let recipes = dir.join(".rewriter").join("recipes");
     std::fs::create_dir_all(&recipes).expect("create recipe dir");
     std::fs::write(
         recipes.join("broken.yml"),

@@ -144,11 +144,11 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a "no such symbol" rejection is retried on a cold server.
 const COLD_REJECTION_GRACE: Duration = Duration::from_secs(20);
 
-/// The analyzer binary. `RUSTREWRITE_ANALYZER` exists so a builder-pinned or
+/// The analyzer binary. `REWRITER_ANALYZER` exists so a builder-pinned or
 /// side-by-side rust-analyzer can be used, and so tests can prove that a
 /// structural-only run never consults it.
 pub fn analyzer_binary() -> String {
-    std::env::var("RUSTREWRITE_ANALYZER").unwrap_or_else(|_| "rust-analyzer".to_string())
+    std::env::var("REWRITER_ANALYZER").unwrap_or_else(|_| "rust-analyzer".to_string())
 }
 
 /// Whether a JSON-RPC error is a rejection rather than a not-analysed-yet signal.
@@ -379,7 +379,7 @@ impl Server {
         // caller proceed: some builds simply do not emit it, and sitting on the
         // full budget would turn every run into a coffee break.
         let silent_grace = Duration::from_secs(10);
-        let trace = std::env::var_os("RUSTREWRITE_TRACE").is_some();
+        let trace = std::env::var_os("REWRITER_TRACE").is_some();
         let mut active: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut saw_progress = false;
         let mut saw_begin = false;
@@ -716,7 +716,7 @@ impl Server {
             if let Some(edit) = value.get("edit").filter(|edit| !edit.is_null()) {
                 return parse_workspace_edit(edit.clone());
             }
-            if std::env::var_os("RUSTREWRITE_TRACE").is_some() {
+            if std::env::var_os("REWRITER_TRACE").is_some() {
                 let shown: String = value.to_string().chars().take(600).collect();
                 eprintln!(
                     "[trace] resolve `{}` had no edit yet: {shown}",

@@ -3081,6 +3081,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rewriter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ast-grep-config",
+ "ast-grep-core",
+ "ast-grep-language",
+ "clap",
+ "globset",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "similar",
+ "walkdir",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rewriter-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "rfd",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rfd"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3161,35 +3190,6 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.12.1",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rustrewrite"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ast-grep-config",
- "ast-grep-core",
- "ast-grep-language",
- "clap",
- "globset",
- "serde",
- "serde_json",
- "serde_yaml",
- "similar",
- "walkdir",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rustrewrite-gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_extras",
- "rfd",
- "serde",
- "serde_json",
 ]
 
 [[package]]

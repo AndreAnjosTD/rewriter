@@ -1,4 +1,4 @@
-//! rustrewrite - recipe-driven, verified refactoring for Rust.
+//! rewriter - recipe-driven, verified refactoring across languages.
 //!
 //! The shape follows OpenRewrite: recipes are declarative catalog entries, a
 //! recipe can compose other recipes, `check` reports without writing, `run`
@@ -28,10 +28,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
-    name = "rustrewrite",
+    name = "rewriter",
     version,
-    about = "Recipe-driven, verified refactoring for Rust",
-    long_about = "OpenRewrite-style recipes for Rust: declarative catalog entries, composable \
+    about = "Recipe-driven, verified refactoring for Rust, Python and TypeScript",
+    long_about = "OpenRewrite-style recipes: declarative catalog entries, composable \
                   recipes, dry-run reporting, and an automatic compile/test gate that rolls a \
                   failed rewrite back."
 )]
@@ -41,7 +41,7 @@ struct Cli {
     path: PathBuf,
 
     /// Extra recipe directory or file (repeatable). Project-local
-    /// `.rustrewrite/recipes` is loaded automatically.
+    /// `.rewriter/recipes` is loaded automatically.
     #[arg(long, global = true)]
     recipes: Vec<PathBuf>,
 
@@ -171,7 +171,7 @@ enum Command {
     /// Keep a warm analyzer alive for this workspace, so semantic runs skip the
     /// load.
     ///
-    /// The server is shared by every `rustrewrite` command on this workspace and
+    /// The server is shared by every `rewriter` command on this workspace and
     /// exits after `--idle` seconds without a request. Semantic commands start
     /// one automatically; this command exists to start it ahead of time, and to
     /// inspect or stop it.
@@ -203,7 +203,7 @@ fn main() {
         if json {
             println!("{}", report::error(&message));
         }
-        eprintln!("rustrewrite: {message}");
+        eprintln!("rewriter: {message}");
         std::process::exit(1);
     }
 }
@@ -649,7 +649,7 @@ fn check(
             // A scan recipe reports hazards and never writes, so offering an
             // --apply for it would be a lie about what running it does.
             if changed_files > 0 {
-                println!("write them with: rustrewrite run {flags} --apply{supplied}");
+                println!("write them with: rewriter run {flags} --apply{supplied}");
             } else {
                 println!("nothing to write: these are findings for a human to judge");
             }

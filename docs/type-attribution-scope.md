@@ -1,8 +1,8 @@
-# Scope: a type-attribution layer for rustrewrite
+# Scope: a type-attribution layer for rewriter
 
 Status: all five phases implemented.
 
-The question this answers: what would it take to make `rustrewrite` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
+The question this answers: what would it take to make `rewriter` do the 18 OpenRewrite primitives that need type information — `ChangeType`, `ChangeMethodName`, `ReorderMethodArguments` and friends — and what does it cost?
 
 Short version: **it is feasible through rust-analyzer's language server, it is a one-week MVP, and it is not feasible by embedding rust-analyzer's own crates.** All three claims below are backed by experiments run on this machine on 2026-10-29, not by reading documentation.
 
@@ -10,7 +10,7 @@ Short version: **it is feasible through rust-analyzer's language server, it is a
 
 [`openrewrite-mapping.md`](openrewrite-mapping.md) found that 18 of OpenRewrite's 45 core primitives need type attribution. Those 18 are the conceptual heart of OpenRewrite: renaming a type across a codebase, renaming a method only where it refers to one specific impl, reordering arguments at every call site of a resolved function.
 
-A syntax engine cannot do any of them safely. `rustrewrite` today can rewrite `.len()` to `.is_empty()` but cannot tell a `Vec::len` from a `MyBag::len`, so it would rewrite both and let the compile gate catch the damage. That is fine for idioms and unacceptable for API migration.
+A syntax engine cannot do any of them safely. `rewriter` today can rewrite `.len()` to `.is_empty()` but cannot tell a `Vec::len` from a `MyBag::len`, so it would rewrite both and let the compile gate catch the damage. That is fine for idioms and unacceptable for API migration.
 
 ## What was measured
 
@@ -54,7 +54,7 @@ The crates track rustc internals and need a matching toolchain. Adopting them wo
 Read of `crates/rust-analyzer/src/cli/ssr.rs` plus the experiments above:
 
 - Matching is **by method name**, not resolution, so it cannot distinguish `Vec::len` from `Other::len` — the exact failure we are trying to fix.
-- It **writes files in place** with no dry run, no report, and no rollback. That is incompatible with `rustrewrite`'s check/run/gate model.
+- It **writes files in place** with no dry run, no report, and no rollback. That is incompatible with `rewriter`'s check/run/gate model.
 - Qualified patterns mostly fail to resolve, so the natural phrasing of a migration is unavailable.
 
 ## Design: how it fits the existing tool
@@ -88,7 +88,7 @@ Non-negotiable details:
 
 - **Files must be on disk** before the server loads, so structural changes flush first.
 - **A `Cargo.toml` is required**; non-Cargo projects need `rust-project.json`. Detect and report rather than silently doing nothing.
-- **Server lifecycle**: one process per `rustrewrite` invocation, killed on exit. A warm-server mode can come later.
+- **Server lifecycle**: one process per `rewriter` invocation, killed on exit. A warm-server mode can come later.
 - **No-op detection**: `edits == 0` is a normal outcome for a rename the server refuses (a trait impl, for example). It must be reported, not treated as success.
 
 ## Phased plan
@@ -106,7 +106,7 @@ Non-negotiable details:
 
 ## Phase 1 results
 
-Implemented in `src/semantic.rs` and exposed as `rustrewrite rename`. Four integration tests cover it; the whole suite runs in about 15 s.
+Implemented in `src/semantic.rs` and exposed as `rewriter rename`. Four integration tests cover it; the whole suite runs in about 15 s.
 
 Exit criterion, measured on 2026-10-29:
 
@@ -144,7 +144,7 @@ steps:
     to: ${to}
 ```
 
-That parameterization is the Rust form of OpenRewrite's `@Option`, and it is what makes `ChangeMethodName` and `ChangeType` reusable primitives instead of one recipe per migration. `rustrewrite list` marks the recipes that need `--set`, and `explain` describes each option.
+That parameterization is the Rust form of OpenRewrite's `@Option`, and it is what makes `ChangeMethodName` and `ChangeType` reusable primitives instead of one recipe per migration. `rewriter list` marks the recipes that need `--set`, and `explain` describes each option.
 
 Four decisions worth recording:
 
@@ -204,7 +204,7 @@ The phase's exit criterion was a cold run under 90 s and a warm run under 10 s; 
 
 Four things this phase taught, all of them found by running it:
 
-1. **A Windows child inherits every inheritable handle of its parent.** Starting the server with `Command::spawn` and null stdio left the caller's stdout pipe open inside the server, so `rustrewrite ... | tee log` never saw the pipe close and looked like a hang for as long as the server lived. The stable fix is `CreateProcessW` with `bInheritHandles = FALSE`; std exposes that flag only on nightly. This also explains why the warm tests passed in isolation but behaved strangely under a capturing harness.
+1. **A Windows child inherits every inheritable handle of its parent.** Starting the server with `Command::spawn` and null stdio left the caller's stdout pipe open inside the server, so `rewriter ... | tee log` never saw the pipe close and looked like a hang for as long as the server lived. The stable fix is `CreateProcessW` with `bInheritHandles = FALSE`; std exposes that flag only on nightly. This also explains why the warm tests passed in isolation but behaved strangely under a capturing harness.
 2. **An accepted socket inherits the listener's non-blocking flag on Windows.** The listener is non-blocking so the accept loop can check its idle timer; every accepted connection therefore failed its second read with `WouldBlock` and was closed midway. One `set_nonblocking(false)` per connection fixes it. Nothing in the error message pointed at this.
 3. **Progress notifications are not a readiness signal.** rust-analyzer emits `$/progress` for unrelated work such as fetching dependencies, so "all progress tokens ended" can be true within milliseconds of startup while the crate graph is still empty. The real signal is the answer to the actual query: `null` means "ask again", a result means ready. Readiness is now advisory and the query loop does the waiting.
 4. **A rejection on a cold server is not final.** `No references found at position` arrives both for a genuinely wrong line and for a valid line on a workspace that has not finished loading. Rejections are therefore retried for 20 s while the server has never resolved anything, and reported immediately once it has — a typo on a warm workspace now fails in a second instead of burning the full 180 s budget.

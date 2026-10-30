@@ -2,7 +2,7 @@ id: rust.migrate.rename-symbol
 name: Rename a resolved symbol
 description: >-
   Renames one constant, static, field or function and every reference the
-  compiler resolves to it. This is the recipe form of `rustrewrite rename`, which
+  compiler resolves to it. This is the recipe form of `rewriter rename`, which
   is what makes a resolved rename composable with other steps. Because the symbol
   is resolved rather than matched by name, an identically named item on another
   type is a different symbol and is left alone. This covers OpenRewrite's

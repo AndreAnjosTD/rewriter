@@ -819,7 +819,7 @@ fn build_rule(
         }
     }
 
-    if std::env::var_os("RUSTREWRITE_DEBUG").is_some() {
+    if std::env::var_os("REWRITER_DEBUG").is_some() {
         eprintln!("--- compiled rule yaml ---\n{yaml}\n---------------------------");
     }
 
