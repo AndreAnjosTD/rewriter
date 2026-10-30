@@ -631,6 +631,9 @@ The decision belongs to the reviewer, so the tool reports it and writes nothing.
 ```
 cargo test      # recipe examples plus end-to-end CLI tests against a fixture crate
 cargo run -- list
+cargo run -p rewriter-gui   # the desktop app
 ```
 
 The integration tests copy `tests/fixtures/demo-crate` to a temp directory for each case, so nothing is shared and nothing in the repo is touched.
+
+If you move the checkout to another directory, run `cargo clean` before building: `build.rs` writes the recipe catalog with absolute paths, and a moved tree leaves those generated files stale.
