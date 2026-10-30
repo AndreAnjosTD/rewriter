@@ -1,0 +1,18 @@
+id: python.idioms
+name: Python idiom rewrites
+description: >-
+  The safe Python idiom fixes in one pass: truthiness instead of `len()`
+  comparisons, `not in` instead of `not ... in`, iterating a dict directly
+  instead of over `.keys()`, and comparing booleans without `== True`.
+tags: [python, composite, idiom]
+risk: low
+
+recipes:
+  - python.idiom.len-truthy
+  - python.idiom.not-in
+  - python.idiom.dict-keys
+  - python.idiom.bool-compare
+
+examples:
+  - before: "if len(items) > 0: pass"
+    after: "if items: pass"
