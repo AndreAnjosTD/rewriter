@@ -1,0 +1,21 @@
+id: python.idiom.not-in
+name: Write membership tests as not in
+description: >-
+  `not x in y` parses as `not (x in y)`, and `x not in y` says the same thing
+  with one operator. The rewrite only moves the negation into the comparison:
+  there is no call, no reordering and no change to short-circuit behaviour.
+tags: [python, idiom]
+risk: low
+
+steps:
+  - rule:
+      pattern: not $X in $Y
+    fix: $X not in $Y
+
+examples:
+  - before: "if not item in items:\n    return"
+    after: "if item not in items:\n    return"
+    why: One membership operator reads better than a negated one.
+  - before: "missing = not key in mapping"
+    after: "missing = key not in mapping"
+    why: The value form has the same meaning.

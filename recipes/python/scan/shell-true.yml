@@ -1,0 +1,30 @@
+id: python.scan.shell-true
+name: Find subprocess calls that use the shell
+description: >-
+  `shell=True` hands the command line to the system shell, so an interpolated
+  argument becomes a shell-injection risk and quoting rules change. Whether a
+  call needs the shell is a design decision, so this recipe reports and writes
+  nothing. It matches every `subprocess.<function>(...)` whose arguments include
+  shell=True in any position, and does not follow a function imported from
+  subprocess under its own name.
+tags: [python, scan, security]
+risk: high
+mode: scan
+
+steps:
+  - rule:
+      pattern: subprocess.$FUNCTION($$$ARGS)
+      has:
+        kind: keyword_argument
+        regex: "^shell\\s*=\\s*True$"
+        stopBy:
+          kind: call
+    message: shell=True passes the command to the system shell
+
+examples:
+  - before: "subprocess.run(command, shell=True)"
+    after: "subprocess.run(command, shell=True)"
+    why: The scan reports the call and leaves it untouched.
+  - before: "subprocess.check_output(command, shell=True)"
+    after: "subprocess.check_output(command, shell=True)"
+    why: Every subprocess function that launches a shell is reported.

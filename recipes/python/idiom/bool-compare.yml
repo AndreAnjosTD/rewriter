@@ -1,0 +1,35 @@
+id: python.idiom.bool-compare
+name: Remove comparisons against True and False
+description: >-
+  For a boolean, `x == True` says what `x` already says and `x == False` says
+  `not x`. The rewrite is only valid for a boolean operand: Python considers
+  `1 == True` true and `2 == True` false even though `bool(2)` is true, so a
+  comparison against a non-boolean is not truthiness. Syntax cannot prove the
+  type, so treat this as a cleanup for code that is already boolean.
+tags: [python, idiom]
+risk: medium
+
+steps:
+  - rule:
+      pattern: $X == True
+    fix: $X
+  - rule:
+      pattern: $X != False
+    fix: $X
+  - rule:
+      pattern: $X == False
+    fix: not $X
+  - rule:
+      pattern: $X != True
+    fix: not $X
+
+examples:
+  - before: "if flag == True:\n    start()"
+    after: "if flag:\n    start()"
+    why: The literal adds a step without adding meaning.
+  - before: "if flag == False:\n    wait()"
+    after: "if not flag:\n    wait()"
+    why: A false comparison is a negation.
+  - before: "ready = flag != False"
+    after: "ready = flag"
+    why: Inequality with False is the value itself.

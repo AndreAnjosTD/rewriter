@@ -1,0 +1,47 @@
+id: python.idiom.len-truthy
+name: Test truthiness instead of comparing len() to zero
+description: >-
+  `len(x) > 0` is the truthiness of a built-in container, and `len(x) == 0` is
+  its negation. Only a name, attribute, subscription or call is rewritten: `not`
+  binds more loosely than `and`, `or` and the conditional expression, so turning
+  `len(a and b) == 0` into `not a and b` would change meaning. A class that
+  defines `__bool__` separately still decides its own truthiness, which syntax
+  cannot see.
+tags: [python, idiom]
+risk: low
+
+steps:
+  - rule:
+      pattern: len($X) > 0
+    constraints:
+      X:
+        any:
+          - kind: identifier
+          - kind: attribute
+          - kind: subscript
+          - kind: call
+    fix: $X
+  - rule:
+      pattern: len($X) == 0
+    constraints:
+      X:
+        any:
+          - kind: identifier
+          - kind: attribute
+          - kind: subscript
+          - kind: call
+    fix: not $X
+
+examples:
+  - before: "if len(items) > 0:\n    use(items)"
+    after: "if items:\n    use(items)"
+    why: A non-empty container is already the condition.
+  - before: "if len(items) == 0:\n    return"
+    after: "if not items:\n    return"
+    why: The empty case is the negation.
+  - before: "if len(self.items) > 0:\n    return"
+    after: "if self.items:\n    return"
+    why: Attributes are primary expressions, so `not` cannot capture more than intended.
+  - before: "if len(a and b) > 0:\n    return"
+    after: "if len(a and b) > 0:\n    return"
+    why: A boolean operand is left alone because dropping len would change precedence.

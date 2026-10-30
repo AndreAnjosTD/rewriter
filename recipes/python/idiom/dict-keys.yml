@@ -1,0 +1,29 @@
+id: python.idiom.dict-keys
+name: Iterate a dictionary directly instead of calling keys()
+description: >-
+  `for key in d.keys():` visits the same keys in the same order as
+  `for key in d:`, without the extra call. Only the iterable of a `for`
+  statement is rewritten. A `d.keys()` used as a value stays as it is, because
+  there the keys view is the point rather than an obstacle to iteration.
+tags: [python, idiom]
+risk: low
+
+steps:
+  - rule:
+      all:
+        - pattern: $DICT.keys()
+        - inside:
+            kind: for_statement
+            field: right
+    fix: $DICT
+
+examples:
+  - before: "for key in config.keys():\n    print(key)"
+    after: "for key in config:\n    print(key)"
+    why: Iterating the dictionary already yields its keys.
+  - before: "for name in settings.keys():\n    apply(name)"
+    after: "for name in settings:\n    apply(name)"
+    why: The loop header is rewritten and the body is untouched.
+  - before: "view = config.keys()"
+    after: "view = config.keys()"
+    why: A keys view used as a value is not a loop iterable and keeps its type.

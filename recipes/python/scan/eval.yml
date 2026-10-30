@@ -1,0 +1,20 @@
+id: python.scan.eval
+name: Find eval() calls
+description: >-
+  `eval` runs arbitrary Python from a string, so any input that reaches it is a
+  code-execution path. Some uses are deliberate, and only a reviewer can tell
+  one from an injection; this recipe reports and writes nothing. It matches the
+  built-in name only, not an attribute such as `module.eval`.
+tags: [python, scan, security]
+risk: high
+mode: scan
+
+steps:
+  - rule:
+      pattern: eval($$$ARGS)
+    message: eval() executes arbitrary code from a string
+
+examples:
+  - before: "value = eval(expression)"
+    after: "value = eval(expression)"
+    why: The scan reports the call and leaves the expression untouched.
