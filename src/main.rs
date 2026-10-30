@@ -542,6 +542,7 @@ fn test_examples(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check(
     catalog: &Catalog,
     root: &Path,
